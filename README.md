@@ -41,7 +41,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    var_dump($status);
 
    // Using the card payment method (VISA, MASTERCARD)
-   $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
+   $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
    $redirectUrl = $responseCard["url"];
    header("Location: $redirectUrl");
    exit();
@@ -95,7 +95,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
             // Using the card payment method (VISA, MASTERCARD)
 
            $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-           $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
+           $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
            $redirectUrl = $responseCard["url"];
            return redirect()->away($redirectUrl);
 
@@ -130,7 +130,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
 
            $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-            $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
+            $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
 
             // Display response structure for debugging purposes
             var_dump($responseCard);
