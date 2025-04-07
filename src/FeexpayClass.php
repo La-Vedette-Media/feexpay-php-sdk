@@ -278,13 +278,9 @@ class FeexpayClass
                 "amount"=>$statusData->amount,
                 "clientNum"=>$payer->partyId,
                 "status"=>$statusData->status,
-                "reference"=>$statusData->reference
+                "reference"=>$statusData->transaction_info->reference
             );
             return $responseSendArray;
-           /*  }
-            else {
-                echo "Réponse inattendue de l'API";
-            } */
         }
         catch (\Throwable $th) {
             echo "Get Status Request Not Send";
