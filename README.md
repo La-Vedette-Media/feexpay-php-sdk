@@ -102,3 +102,6 @@ The MIT License (MIT). Please see [License File](LICENSE.md) for more informatio
 [link-downloads]: https://packagist.org/packages/Feexpay/FeexpayPhp
 [link-author]: https://github.com/LOUGBEGNON
 [link-contributors]: ../../contributors
+
+
+php -S localhost:8000

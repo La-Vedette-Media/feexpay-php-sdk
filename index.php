@@ -1,15 +1,16 @@
 <?php
 require 'vendor/autoload.php';
 
-include 'src/FeexpayClass.php'; 
-   $price = 500;
-   $id = "671a774c706593edb3dc4ab2";
-   $token = "fp_HHNoQGt9Vn8KpZoLaBkG3uEeKpLUYBaHUZIZXJE3Xgv0OKG2tK3A7PtlytctikrJ";
-   $callback_url = 'https://www.google.com';
-   $mode = 'LIVE';
-   $feexpayclass = new Feexpay\FeexpayPhp\FeexpayClass($id, $token, $callback_url, $mode);
-   $result = $feexpayclass->init($price, "button_payee");
-   ?>
+// Configuration FeexPay
+$id = "671a774c706593edb3dc4ab2";
+$token = "fp_HHNoQGt9Vn8KpZoLaBkG3uEeKpLUYBaHUZIZXJE3Xgv0OKG2tK3A7PtlytctikrJ";
+$callback_url = "http://localhost:8000/success.php";
+$error_callback_url = "http://localhost:8000/error.php";
+$mode = "LIVE"; // ou "SANDBOX" pour les tests
+
+// Initialisation de FeexPay
+$feexpay = new Feexpay\FeexpayPhp\FeexpayClass($id, $token, $callback_url, $mode, $error_callback_url);
+?>
 
 <!DOCTYPE html>
 <html lang="fr">
@@ -73,10 +74,34 @@ include 'src/FeexpayClass.php';
     </style>
 </head>
 <body>
-  <div id='button_payee'></div>
+    <div class="container">
+        <h1>Votre Panier</h1>
+        
+        <div class="product-info">
+            <p><strong>Produit :</strong> T-shirt personnalisé</p>
+            <p><strong>Prix :</strong> 10 XOF</p>
+        </div>
+
+        <!-- Bouton de paiement FeexPay -->
+        <div id="button_payee"></div>
+
+        <!-- Bouton personnalisé (optionnel) -->
+        <!-- <button id="custom_button" class="custom-button">Payer avec FeexPay</button> -->
+
+        <div class="footer">
+            <p>Paiement sécurisé par FeexPay</p>
+        </div>
+    </div>
+
     <?php
     // Initialisation du paiement
-    $result = $feexpay->init(5000, "button_payee", false, "", "Achat de T-shirt", "info_callback");
+    $result = $feexpay->init(10, "button_payee", false, "", "Achat de T-shirt", "info_callback");
+    
+    // $response = $feexpay->paiementLocal("10","2290160661600","MOOV","John Doe","adinsiabdias@gmail.com","","");
+    $status = $feexpay->getPaiementStatus($result);
+    
+    // $status = $feexpay->getPaiementStatus($response);
+    // var_dump($status);
     // Pour utiliser un bouton personnalisé, décommentez la ligne suivante :
     // $result = $feexpay->init(5000, "button_payee", true, "custom_button", "Achat de T-shirt", "info_callback");
     ?>
