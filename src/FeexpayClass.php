@@ -31,6 +31,7 @@ class FeexpayClass
         $id = $this->id;
         $callback_url = $this->callback_url;
         $error_callback_url = $this->error_callback_url;
+        $mode = $this->mode;
 
         echo "
         <script src='https://api.feexpay.me/feexpay-javascript-sdk/index.js'></script>
@@ -41,7 +42,7 @@ class FeexpayClass
              amount:$amount,
              token:'$token',
              callback_url:'$callback_url',
-             mode: 'LIVE',
+             mode: '$mode',
              custom_button: '$use_custom_button',
             id_custom_button: '$custom_button_id',
             description: '$description',
