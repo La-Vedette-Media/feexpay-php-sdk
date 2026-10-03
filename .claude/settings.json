@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.feexpay.me)",
+      "Bash(php -v)",
+      "Bash(php -l src/FeexpayClass.php)",
+      "Bash(php -r ' *)",
+      "Bash(touch MEMORY.md)",
+      "Bash(printf -- \"- [Commit message only]\\(commit-message-only.md\\) — donner le message de commit, ne jamais commiter soi-même\\\\n\")"
+    ]
+  }
+}

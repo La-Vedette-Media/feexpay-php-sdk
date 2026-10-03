@@ -35,10 +35,19 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
    $skeleton = new Feexpay\FeexpayPhp\FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
 
-   // Using the mobile network payment method (MTN, MOOV)
-   $response = $skeleton->paiementLocal("amount", "phone_number", "network (MTN, MOOV)", "Jon Doe", "jondoe@gmail.com");
-   $status = $skeleton->getPaiementStatus($response);
-   var_dump($status);
+   // Using the mobile network payment method (MTN, MOOV, MTN CG, ...)
+   // paiementLocal(amount, phoneNumber, network, fullname, email, callback_info, custom_id, otp = "")
+   $reference = $skeleton->paiementLocal(100, "22966000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
+
+   if ($reference === null) {
+       // The API refused the payment: show the real reason
+       $error = $skeleton->getLastError();
+       echo $error["message"];      // message returned by the API
+       var_dump($error["response"]); // full API response, useful for support
+   } else {
+       $status = $skeleton->getPaiementStatus($reference);
+       var_dump($status);
+   }
 
    // Using the card payment method (VISA, MASTERCARD)
    $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
@@ -100,12 +109,15 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
            return redirect()->away($redirectUrl);
 
 
-           // Using the mobile network payment method (MTN, MOOV)
+           // Using the mobile network payment method (MTN, MOOV, MTN CG, ...)
 
 
             $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-            $response = $skeleton->paiementCard("amount", "phone_number", "network (MTN, MOOV)", "Jon Doe","jondoe@gmail.com");
-            $status = $skeleton->getPaiementStatus($response);
+            $reference = $skeleton->paiementLocal(100, "22966000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
+            if ($reference === null) {
+                return response($skeleton->getLastError()["message"])->setStatusCode(422);
+            }
+            $status = $skeleton->getPaiementStatus($reference);
             var_dump($status);
        }
    }

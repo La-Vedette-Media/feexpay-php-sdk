@@ -6,6 +6,18 @@ namespace Feexpay\FeexpayPhp;
 
 class FeexpayClass
 {
+    public $id;
+    public $token;
+    public $callback_url;
+    public $error_callback_url;
+    public $mode;
+
+    /**
+     * Last error returned by paiementLocal() (null when the last call succeeded)
+     * @var array|null ['message' => string, 'response' => mixed]
+     */
+    private $lastError = null;
+
     /**
      * Create a new Skeleton Instance
      * @param $id
@@ -66,91 +78,114 @@ class FeexpayClass
         }
     }
 
+    /**
+     * Send a POST request to the Feexpay API
+     * @param string $url
+     * @param array $post
+     * @param array $options extra cURL options (override the defaults)
+     * @return string|false raw response body, false on network error
+     */
+    private function curlPost(string $url, array $post, array $options = array())
+    {
+        $defaults = array(
+            CURLOPT_POST => 1,
+            CURLOPT_HEADER => 0,
+            CURLOPT_URL => $url,
+            CURLOPT_FRESH_CONNECT => 1,
+            CURLOPT_RETURNTRANSFER => 1,
+            CURLOPT_FORBID_REUSE => 1,
+            CURLOPT_POSTFIELDS => http_build_query($post),
+            CURLOPT_CAINFO => __DIR__ . DIRECTORY_SEPARATOR . 'certificats/IXRCERT.crt',
+        );
+
+        $ch = curl_init();
+        curl_setopt_array($ch, ($options + $defaults));
+
+        $result = curl_exec($ch);
+        if ($result === false) {
+            $this->lastError = array('message' => curl_error($ch), 'response' => null);
+        }
+
+        curl_close($ch);
+
+        return $result;
+    }
+
+    /**
+     * Remove spaces, dashes, dots, parentheses and the leading "+" / "00" from a phone number
+     * e.g. "+242 06 123 45 67" => "242061234567"
+     */
+    private function normalizePhoneNumber(string $phoneNumber): string
+    {
+        $phoneNumber = preg_replace('/[\s\-\.\(\)]/', '', $phoneNumber);
+        $phoneNumber = preg_replace('/^(\+|00)/', '', $phoneNumber);
+
+        return $phoneNumber;
+    }
+
+    /**
+     * Error of the last paiementLocal() call, null if it succeeded
+     * @return array|null ['message' => string, 'response' => mixed (decoded API response)]
+     */
+    public function getLastError()
+    {
+        return $this->lastError;
+    }
+
+    /**
+     * Mobile money payment (MTN, MOOV, MTN CG, ...)
+     * @return string|null the payment reference, or null on failure (see getLastError())
+     */
     public function paiementLocal(float $amount, string $phoneNumber, string $operatorName, string $fullname, string $email, string $callback_info, string $custom_id, string $otp="")
     {
-        function curl_post($url, array $post = null, array $options = array())
-        {
-            $defaults = array(
+        $this->lastError = null;
 
-                CURLOPT_POST => 1,
+        $post = array(
+            "phoneNumber" => $this->normalizePhoneNumber($phoneNumber),
+            "amount" => $amount,
+            "reseau" => trim($operatorName),
+            "token" => $this->token,
+            "shop" => $this->id,
+            "first_name" => $fullname,
+            "email" => $email,
+            "callback_info" => $callback_info,
+            "reference" => $custom_id,
+            "otp" => $otp,
+        );
 
-                CURLOPT_HEADER => 0,
-
-                CURLOPT_URL => $url,
-
-                CURLOPT_FRESH_CONNECT => 1,
-
-                CURLOPT_RETURNTRANSFER => 1,
-
-                CURLOPT_FORBID_REUSE => 1,
-
-                //CURLOPT_TIMEOUT => 4,
-
-                CURLOPT_POSTFIELDS => http_build_query($post),
-                CURLOPT_CAINFO => __DIR__ . DIRECTORY_SEPARATOR . 'certificats/IXRCERT.crt',
-
-            );
-
-            $ch = curl_init();
-
-            curl_setopt_array($ch, ($options + $defaults));
-
-            if (!$result = curl_exec($ch)) {
-
-                trigger_error(curl_error($ch));
-
-            }
-
-            curl_close($ch);
-
-            return $result;
-
+        // No CURLOPT_TIMEOUT: the request waits for the customer to validate on their phone
+        $responseCurlPostPaiement = $this->curlPost("https://api.feexpay.me/api/transactions/requesttopay/integration", $post);
+        if ($responseCurlPostPaiement === false) {
+            return null;
         }
 
-        $responseIdGet = $this->getIdAndMarchanName();
-        $nameMarchandExist = isset($responseIdGet->name);
+        $responseCurlPostPaiementData = json_decode($responseCurlPostPaiement);
 
-        try {
-            $post = array("phoneNumber" => $phoneNumber, "amount" => $amount, "reseau" => $operatorName, "token" => $this->token, "shop" => $this->id, "first_name" => $fullname, "email" => $email, "callback_info" => $callback_info, "reference" => $custom_id, "otp" =>$otp);
-            $responseCurlPostPaiement = curl_post("https://api.feexpay.me/api/transactions/requesttopay/integration", $post);
-            $responseCurlPostPaiementData = json_decode($responseCurlPostPaiement);
-
+        if (isset($responseCurlPostPaiementData->reference) && $responseCurlPostPaiementData->reference !== '') {
             return $responseCurlPostPaiementData->reference;
-        } catch (\Throwable $th) {
-            echo "Request Not Send";
         }
+
+        $message = "Réponse inattendue de l'API";
+        if (is_object($responseCurlPostPaiementData)) {
+            foreach (array('message', 'error', 'errors', 'status') as $key) {
+                if (!empty($responseCurlPostPaiementData->$key)) {
+                    $value = $responseCurlPostPaiementData->$key;
+                    $message = is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE);
+                    break;
+                }
+            }
+        }
+
+        $this->lastError = array(
+            'message' => $message,
+            'response' => $responseCurlPostPaiementData !== null ? $responseCurlPostPaiementData : $responseCurlPostPaiement,
+        );
+
+        return null;
     }
 
     public function requestToPayWeb(float $amount, string $phoneNumber, string $operatorName, string $fullname, string $email, string $callback_info, string $custom_id, string $cancel_url="", string $return_url="")
     {
-        function curl_post($url, array $post = null, array $options = array())
-        {
-            $defaults = array(
-                CURLOPT_POST => 1,
-                CURLOPT_HEADER => 0,
-                CURLOPT_URL => $url,
-                CURLOPT_FRESH_CONNECT => 1,
-                CURLOPT_RETURNTRANSFER => 1,
-                CURLOPT_FORBID_REUSE => 1,
-                CURLOPT_TIMEOUT => 4,
-                CURLOPT_POSTFIELDS => http_build_query($post),
-                CURLOPT_CAINFO => __DIR__ . DIRECTORY_SEPARATOR . 'certificats/IXRCERT.crt',
-            );
-
-            $ch = curl_init();
-
-            curl_setopt_array($ch, ($options + $defaults));
-
-            if (!$result = curl_exec($ch)) {
-                trigger_error(curl_error($ch));
-            }
-
-            curl_close($ch);
-
-            return $result;
-
-        }
-
         $responseIdGet = $this->getIdAndMarchanName();
         $nameMarchandExist = isset($responseIdGet->name);
         if ($nameMarchandExist == true) {
@@ -160,7 +195,7 @@ class FeexpayClass
                     "token" => $this->token, "shop" => $this->id, "first_name" => $fullname, "email" => $email,
                     "callback_info" => $callback_info, "reference" => $custom_id, 'return_url' => $return_url,
                     'cancel_url' => $cancel_url);
-                $responseCurlPostPaiement = curl_post("https://api.feexpay.me/api/transactions/requesttopay/integration", $post);
+                $responseCurlPostPaiement = $this->curlPost("https://api.feexpay.me/api/transactions/requesttopay/integration", $post, array(CURLOPT_TIMEOUT => 4));
                 $responseCurlPostPaiementData = json_decode($responseCurlPostPaiement);
 
                 if ($responseCurlPostPaiementData->status == "FAILED") {
@@ -195,44 +230,6 @@ class FeexpayClass
         string $custom_id
     )
     {
-        function curl_post($url, array $post = null, array $options = array())
-        {
-            $defaults = array(
-
-                CURLOPT_POST => 1,
-
-                CURLOPT_HEADER => 0,
-
-                CURLOPT_URL => $url,
-
-                CURLOPT_FRESH_CONNECT => 1,
-
-                CURLOPT_RETURNTRANSFER => 1,
-
-                CURLOPT_FORBID_REUSE => 1,
-
-                CURLOPT_TIMEOUT => 4,
-
-                CURLOPT_POSTFIELDS => http_build_query($post),
-                CURLOPT_CAINFO => __DIR__ . DIRECTORY_SEPARATOR . 'certificats/IXRCERT.crt',
-
-            );
-
-            $ch = curl_init();
-
-            curl_setopt_array($ch, ($options + $defaults));
-
-            if (!$result = curl_exec($ch)) {
-
-                trigger_error(curl_error($ch));
-
-            }
-
-            curl_close($ch);
-
-            return $result;
-        }
-
         $responseIdGet = $this->getIdAndMarchanName();
         $nameMarchandExist = isset($responseIdGet->name);
         $systemCardPay = $responseIdGet->systemCardPay;
@@ -256,7 +253,7 @@ class FeexpayClass
                     "reference" => $custom_id,
                     "systemCardPay" => $systemCardPay,
                 );
-                $responseCurlPostPaiement = curl_post("https://api.feexpay.me/api/transactions/card/inittransact/integration", $post);
+                $responseCurlPostPaiement = $this->curlPost("https://api.feexpay.me/api/transactions/card/inittransact/integration", $post, array(CURLOPT_TIMEOUT => 4));
                 $responseCurlPostPaiementData = json_decode($responseCurlPostPaiement);
                 
                 /* echo $responseCurlPostPaiementData;
