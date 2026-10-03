@@ -37,7 +37,8 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
    // Using the mobile network payment method (MTN, MOOV, MTN CG, ...)
    // paiementLocal(amount, phoneNumber, network, fullname, email, callback_info, custom_id, otp = "")
-   $reference = $skeleton->paiementLocal(100, "22966000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
+   // phoneNumber: country code + local number, e.g. Benin 229 + 0166000000 => "2290166000000"
+   $reference = $skeleton->paiementLocal(100, "2290166000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
 
    if ($reference === null) {
        // The API refused the payment: show the real reason
@@ -50,7 +51,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    }
 
    // Using the card payment method (VISA, MASTERCARD)
-   $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
+   $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
    $redirectUrl = $responseCard["url"];
    header("Location: $redirectUrl");
    exit();
@@ -104,7 +105,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
             // Using the card payment method (VISA, MASTERCARD)
 
            $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-           $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
+           $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
            $redirectUrl = $responseCard["url"];
            return redirect()->away($redirectUrl);
 
@@ -113,7 +114,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
 
             $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-            $reference = $skeleton->paiementLocal(100, "22966000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
+            $reference = $skeleton->paiementLocal(100, "2290166000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
             if ($reference === null) {
                 return response($skeleton->getLastError()["message"])->setStatusCode(422);
             }
@@ -142,7 +143,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
 
            $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-            $responseCard = $skeleton->paiementCard("amount", "phoneNumber(66000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
+            $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
 
             // Display response structure for debugging purposes
             var_dump($responseCard);
