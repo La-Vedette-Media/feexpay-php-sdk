@@ -20,7 +20,7 @@ Not obligatory, but suggest an idea for implementing addition or change.
 
 Include as many relevant details about the environment you experienced the bug in and how to reproduce it.
 
-* Version used (e.g. PHP 8.2, SDK 2.1.0):
+* Version used (e.g. PHP 8.2, SDK 3.0.0):
 * Operating system and version (e.g. Ubuntu 24.04, Windows 11):
 * Link to your project:
 * ...

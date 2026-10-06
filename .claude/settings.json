@@ -16,7 +16,13 @@
       "Bash(git grep *)",
       "Bash(git ls-remote *)",
       "Bash(curl -s -o /dev/null -m 15 -w '%{http_code}' https://api-v2.feexpay.me/api/feexpay-javascript-sdk/index.js)",
-      "Bash(echo \"script JS v2.0.0: $\\(curl -s -o /dev/null -m 15 -w '%{http_code}' https://api-v2.feexpay.me/api/feexpay-javascript-sdk/index.js\\)\")"
+      "Bash(echo \"script JS v2.0.0: $\\(curl -s -o /dev/null -m 15 -w '%{http_code}' https://api-v2.feexpay.me/api/feexpay-javascript-sdk/index.js\\)\")",
+      "Bash(git reflog *)",
+      "Bash(ssh-keygen -lf ~/.ssh/id_rsa_amedee.pub)",
+      "Bash(ssh-keygen -lf ~/.ssh/id_rsa.pub)",
+      "Bash(sed -i '' 's/\"version\": \"2.1.0\"/\"version\": \"3.0.0\"/' composer.json)",
+      "Bash(sed -i '' 's/SDK 2.1.0\\)/SDK 3.0.0\\)/' ISSUE_TEMPLATE.md)",
+      "Bash(php -r 'json_decode\\(file_get_contents\\(\"composer.json\"\\), false, 512, JSON_THROW_ON_ERROR\\); echo \"composer.json valide\\\\n\";')"
     ]
   }
 }

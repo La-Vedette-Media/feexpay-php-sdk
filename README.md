@@ -5,7 +5,9 @@
 
 This guide explains how to use the Feexpay PHP SDK to easily integrate mobile and card payment methods into your PHP or Laravel application. Follow these steps to get started:
 
-> **Version 2.1.0** — the SDK now uses the Feexpay API v2 (`https://api-v2.feexpay.me`). The previous host (`https://api.feexpay.me`) is no longer available, so older versions of the SDK no longer work: please upgrade.
+> **Version 3.0.0** — the SDK uses the Feexpay API v2 (`https://api-v2.feexpay.me`). The previous host (`https://api.feexpay.me`) is no longer available, so older versions of the SDK no longer work: please upgrade.
+>
+> **Upgrading from 2.x:** `paiementCard()` has a new signature, `paiementCard(amount, currency, firstName, lastName, email, phoneNumber, city, zip, country)`, and returns `null` on failure. Update your calls before upgrading.
 
 ### Requirements
 
@@ -108,14 +110,16 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
    ```php
    <?php
-   // paiementCard(amount, phoneNumber, typeCard, firstName, lastName, email, country, address, district, currency, callback_info, custom_id)
-   $responseCard = $skeleton->paiementCard(100, "2290166000000", "VISA", "Jon", "Doe", "jondoe@gmail.com", "BJ", "Cotonou", "Littoral", "XOF", "order 123", "my-ref-125");
+   // paiementCard(amount, currency, firstName, lastName, email, phoneNumber, city, zip, country) - all arguments are required
+   $responseCard = $skeleton->paiementCard(100, "XOF", "Jon", "Doe", "jondoe@gmail.com", "2290166000000", "Cotonou", "00229", "BJ");
 
-   if (isset($responseCard["url"])) {
-       header("Location: " . $responseCard["url"]);
+   if ($responseCard !== null) {
+       // $responseCard["reference"] identifies the payment
+       header("Location: " . $responseCard["payment_url"]);
        exit();
    } else {
-       echo "Card payment could not be initialized";
+       // The API refused the payment: show the real reason
+       echo $skeleton->getLastError()["message"];
    }
    ?>
    ```
@@ -178,7 +182,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
        public function feexpayCard()
        {
             $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-            $responseCard = $skeleton->paiementCard(100, "2290166000000", "VISA", "Jon", "Doe", "jondoe@gmail.com", "BJ", "Cotonou", "Littoral", "XOF", "order 123", "my-ref-125");
+            $responseCard = $skeleton->paiementCard(100, "XOF", "Jon", "Doe", "jondoe@gmail.com", "2290166000000", "Cotonou", "00229", "BJ");
 
             if ($responseCard !== null) {
                 return redirect()->away($responseCard["payment_url"]);
