@@ -6,7 +6,17 @@
       "Bash(php -l src/FeexpayClass.php)",
       "Bash(php -r ' *)",
       "Bash(touch MEMORY.md)",
-      "Bash(printf -- \"- [Commit message only]\\(commit-message-only.md\\) — donner le message de commit, ne jamais commiter soi-même\\\\n\")"
+      "Bash(printf -- \"- [Commit message only]\\(commit-message-only.md\\) — donner le message de commit, ne jamais commiter soi-même\\\\n\")",
+      "Bash(curl -s -m 30 https://api-v2.feexpay.me/feexpay-javascript-sdk/index.js -o sdk.js)",
+      "Bash(grep -oE \"/api/[A-Za-z0-9_/\\\\$\\\\{\\\\}.\\\\-]+\" sdk.js)",
+      "Bash(grep -oE \".{120}\\(getrequesttopay|status/|/status|getStatus\\)[^;]{0,200}\" sdk.js)",
+      "Bash(python3 -)",
+      "Bash(grep -oE \"/api/[A-Za-z0-9_/\\\\{\\\\}:\\\\$.-]+\" docs.js)",
+      "Bash(git symbolic-ref *)",
+      "Bash(git grep *)",
+      "Bash(git ls-remote *)",
+      "Bash(curl -s -o /dev/null -m 15 -w '%{http_code}' https://api-v2.feexpay.me/api/feexpay-javascript-sdk/index.js)",
+      "Bash(echo \"script JS v2.0.0: $\\(curl -s -o /dev/null -m 15 -w '%{http_code}' https://api-v2.feexpay.me/api/feexpay-javascript-sdk/index.js\\)\")"
     ]
   }
 }

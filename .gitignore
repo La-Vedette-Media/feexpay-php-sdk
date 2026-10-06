@@ -1,8 +1,38 @@
-build
-composer.lock
-vendor
-phpcs.xml
-phpunit.xml
-.phpunit.result.cache
+# Dependencies (library: the lock file is not versioned)
+/vendor/
+/composer.lock
+/composer.phar
 
-.idea
+# Build and test artifacts
+/build/
+/coverage/
+/phpcs.xml
+/phpunit.xml
+.phpunit.result.cache
+.phpunit.cache/
+.php-cs-fixer.cache
+.phpcs-cache
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# IDE / editors
+/.idea/
+/.vscode/
+/.fleet/
+*.iml
+*.swp
+*.swo
+*~
+
+# Local tooling settings
+/.claude/settings.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
