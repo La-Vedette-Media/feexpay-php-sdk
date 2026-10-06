@@ -18,7 +18,7 @@ class FeexpayClass
     public $mode;
 
     /**
-     * Last error returned by paiementLocal() (null when the last call succeeded)
+     * Last error returned by paiementLocal() / paiementCard() (null when the last call succeeded)
      * @var array|null ['message' => string, 'response' => mixed]
      */
     private $lastError = null;
@@ -154,7 +154,31 @@ class FeexpayClass
     }
 
     /**
-     * Error of the last paiementLocal() call, null if it succeeded
+     * Store the error returned by the API in lastError
+     * @param mixed $data decoded API response
+     * @param string $raw raw API response
+     */
+    private function setApiError($data, string $raw)
+    {
+        $message = "Réponse inattendue de l'API";
+        if (is_object($data)) {
+            foreach (array('message', 'error', 'errors', 'status') as $key) {
+                if (!empty($data->$key)) {
+                    $value = $data->$key;
+                    $message = is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE);
+                    break;
+                }
+            }
+        }
+
+        $this->lastError = array(
+            'message' => $message,
+            'response' => $data !== null ? $data : $raw,
+        );
+    }
+
+    /**
+     * Error of the last paiementLocal() / paiementCard() call, null if it succeeded
      * @return array|null ['message' => string, 'response' => mixed (decoded API response)]
      */
     public function getLastError()
@@ -194,21 +218,7 @@ class FeexpayClass
             return $responseCurlPostPaiementData->reference;
         }
 
-        $message = "Réponse inattendue de l'API";
-        if (is_object($responseCurlPostPaiementData)) {
-            foreach (array('message', 'error', 'errors', 'status') as $key) {
-                if (!empty($responseCurlPostPaiementData->$key)) {
-                    $value = $responseCurlPostPaiementData->$key;
-                    $message = is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE);
-                    break;
-                }
-            }
-        }
-
-        $this->lastError = array(
-            'message' => $message,
-            'response' => $responseCurlPostPaiementData !== null ? $responseCurlPostPaiementData : $responseCurlPostPaiement,
-        );
+        $this->setApiError($responseCurlPostPaiementData, $responseCurlPostPaiement);
 
         return null;
     }
@@ -250,80 +260,72 @@ class FeexpayClass
         }
     }
 
-    public function paiementCard(
-        float $amount,
-        string $phoneNumber,
-        string $typeCard,
-        string $firstName,
-        string $lastName,
-        string $email,
-        string $country,
-        string $address,
-        string $district,
-        string $currency,
-        string $callback_info,
-        string $custom_id
-    )
+    /**
+     * Card payment (VISA, MASTERCARD): creates the transaction and returns the page where the customer pays
+     * All arguments are required by the API.
+     * @param float $amount
+     * @param string $currency e.g. "XOF", "USD", "EUR"
+     * @param string $firstName
+     * @param string $lastName
+     * @param string $email
+     * @param string $phoneNumber country code + local number, e.g. "84986702980"
+     * @param string $city
+     * @param string $zip postal code
+     * @param string $country ISO 3166-1 alpha-2 code, e.g. "BJ", "VN"
+     * @return array|null ['url' => string, 'payment_url' => string, 'reference' => string], or null on failure (see getLastError())
+     */
+    public function paiementCard(float $amount, string $currency, string $firstName, string $lastName, string $email, string $phoneNumber, string $city, string $zip, string $country)
     {
-        $responseIdGet = $this->getIdAndMarchanName();
-        $nameMarchandExist = isset($responseIdGet->name);
-        $systemCardPay = isset($responseIdGet->systemCardPay) ? $responseIdGet->systemCardPay : null;
+        $this->lastError = null;
 
-        //        if ($nameMarchandExist == true) {
-            try {
-                $post = array(
-                    "phoneNumber" => $this->normalizePhoneNumber($phoneNumber),
-                    "amount" => $amount,
-                    "type_card" => $typeCard,
-                    "shop" => $this->id,
-                    "first_name" => $firstName,
-                    "last_name" => $lastName,
-                    "email" => $email,
-                    "country" => $country,
-                    "adress" => $address,
-                    "city" => $district,
-                    "currency" => $currency,
-                    "callback_info" => $callback_info,
-                    "reference" => $custom_id,
-                    "systemCardPay" => $systemCardPay,
-                );
-                $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/public/requesttopay/init", $post);
-                $responseCurlPostPaiementData = json_decode((string) $responseCurlPostPaiement);
-                
-                /* echo $responseCurlPostPaiementData;
+        $post = array(
+            "shop" => $this->id,
+            "amount" => $amount,
+            "currency" => strtoupper(trim($currency)),
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "phoneNumber" => $this->normalizePhoneNumber($phoneNumber),
+            "city" => trim($city),
+            "zip" => trim($zip),
+            "country" => strtoupper(trim($country)),
+        );
 
-                if ($responseCurlPostPaiementData->status == "FAILED") {
-                    echo "Une erreur s'est produite";
-                } */
-                $paymentUrl = null;
-                foreach (array('payment_url', 'paymentUrl', 'url') as $key) {
-                    if (!empty($responseCurlPostPaiementData->$key)) {
-                        $paymentUrl = $responseCurlPostPaiementData->$key;
-                        break;
-                    }
-                }
-
-                if ($paymentUrl !== null) {
-                    $result = [
-                        'url' => $paymentUrl,
-                        'reference' => $responseCurlPostPaiementData->reference ?? '',
-                    ];
-                    return $result;
-                }
-                else {
-                    echo "Réponse inattendue de l'API";
-                }
-
+        $missing = array();
+        foreach ($post as $key => $value) {
+            if ($value === '' || $value === null) {
+                $missing[] = $key;
             }
-            catch (\Throwable $th) {
-                echo "Erreur inattendue : " . $th->getMessage();
-                echo "Request Not Send";
-            }
-//        }
-//        else {
-//            return false;
-//        }
+        }
+        if ($amount <= 0) {
+            $missing[] = 'amount';
+        }
+        if (!empty($missing)) {
+            $this->lastError = array(
+                'message' => 'Champs obligatoires manquants ou invalides : ' . implode(', ', $missing),
+                'response' => null,
+            );
+            return null;
+        }
 
+        $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/public/requesttopay/init", $post);
+        if ($responseCurlPostPaiement === false) {
+            return null;
+        }
+
+        $responseCurlPostPaiementData = json_decode($responseCurlPostPaiement);
+
+        if (isset($responseCurlPostPaiementData->payment_url) && $responseCurlPostPaiementData->payment_url !== '') {
+            return array(
+                'url' => $responseCurlPostPaiementData->payment_url,
+                'payment_url' => $responseCurlPostPaiementData->payment_url,
+                'reference' => $responseCurlPostPaiementData->reference ?? '',
+            );
+        }
+
+        $this->setApiError($responseCurlPostPaiementData, $responseCurlPostPaiement);
+
+        return null;
     }
 
     public function getPaiementStatus($paiementRef)
