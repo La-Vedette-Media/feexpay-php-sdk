@@ -4,7 +4,7 @@ All notable changes to `FeexpayPhp` will be documented in this file.
 
 Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) principles.
 
-## NEXT - YYYY-MM-DD
+## 2.1.0 - 2026-10-06
 
 ### Added
 - `getLastError()`: returns the API error message and full response when `paiementLocal()` fails
@@ -18,6 +18,8 @@ Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) princi
 - `requestToPayWeb()` and `paiementCard()` no longer use a 4 second timeout
 - `requestToPayWeb()` returns `false` on an invalid or `FAILED` response; `cancel_url` / `return_url` default to `https://feexpay.me/en`
 - `getPaiementStatus()` returns `false` when the reference is empty
+- `composer.json`: declares the requirements (PHP >= 7.1, `ext-curl`, `ext-json`)
+- `.gitignore` rewritten; the `.idea` folder is no longer versioned
 
 ### Deprecated
 - Nothing
@@ -29,6 +31,7 @@ Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) princi
 - Removed the unused shop lookup in `paiementLocal()` (one less HTTP call per payment)
 - Declared class properties (dynamic properties are deprecated since PHP 8.2)
 - README: correct `paiementLocal()` signature (7 required arguments) and error handling example
+- README: correct `paiementCard()` examples (12 required arguments), document `requestToPayWeb()`, the `getPaiementStatus()` result and the requirements
 
 ### Removed
 - Nothing

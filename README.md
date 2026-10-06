@@ -5,6 +5,14 @@
 
 This guide explains how to use the Feexpay PHP SDK to easily integrate mobile and card payment methods into your PHP or Laravel application. Follow these steps to get started:
 
+> **Version 2.1.0** — the SDK now uses the Feexpay API v2 (`https://api-v2.feexpay.me`). The previous host (`https://api.feexpay.me`) is no longer available, so older versions of the SDK no longer work: please upgrade.
+
+### Requirements
+
+- PHP 7.1 or higher
+- The `curl` and `json` PHP extensions
+- Your shop's id and your API key (it starts with `fp_`), available in your Feexpay dashboard
+
 ### Installation
 
 1. Install a local server like Xampp or Wamp etc ...
@@ -16,22 +24,33 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    composer --version
    ```
 
+4. Install the Feexpay package in your project:
+   ```
+   composer require feexpay/feexpay-php
+   ```
+
+   To upgrade an existing project:
+   ```
+   composer update feexpay/feexpay-php
+   ```
+
 ### Usage in a Simple PHP Environment
 
-1. Create your PHP project.
+1. Create your PHP project and install the package with Composer (see above).
 
-2. Download the Git repository by opening your terminal and running the following command:
+   You can also download the Git repository instead:
    ```
    git clone https://github.com/La-Vedette-Media/feexpay-php-sdk.git
    ```
 
-3. Create a PHP file, for example, `index.php`.
+2. Create a PHP file, for example, `index.php`.
 
-4. Use the SDK methods in your PHP file:
+3. Use the SDK methods in your PHP file:
 
    ```php
    <?php
-   include 'src/FeexpayClass.php'; 
+   require 'vendor/autoload.php';
+   // Without Composer: include 'src/FeexpayClass.php';
 
    $skeleton = new Feexpay\FeexpayPhp\FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
 
@@ -49,20 +68,63 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
        $status = $skeleton->getPaiementStatus($reference);
        var_dump($status);
    }
-
-   // Using the card payment method (VISA, MASTERCARD)
-   $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
-   $redirectUrl = $responseCard["url"];
-   header("Location: $redirectUrl");
-   exit();
    ?>
    ```
 
-5. You can also integrate a payment button in your PHP page:
+4. Check the status of a payment with its reference:
 
    ```php
    <?php
-   include 'src/FeexpayClass.php'; 
+   $status = $skeleton->getPaiementStatus($reference);
+   // [
+   //     "amount"    => 100,
+   //     "clientNum" => "2290166000000",
+   //     "status"    => "SUCCESSFUL",   // or "PENDING", "FAILED"
+   //     "reference" => "63ecaff1-7572-413d-93bb-8cba92bb8c2c",
+   // ]
+   ?>
+   ```
+
+   `getPaiementStatus()` returns `false` when the reference is empty.
+
+5. Use the web payment method for the networks that redirect the customer to a payment page:
+
+   ```php
+   <?php
+   // requestToPayWeb(amount, phoneNumber, network, fullname, email, callback_info, custom_id, cancel_url, return_url)
+   $response = $skeleton->requestToPayWeb(100, "2250700000000", "network", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-124", "https://your-site.com/cancel", "https://your-site.com/return");
+
+   if ($response === false || empty($response["payment_url"])) {
+       echo "Payment could not be initialized";
+   } else {
+       // $response["reference"] and $response["order_id"] identify the payment
+       header("Location: " . $response["payment_url"]);
+       exit();
+   }
+   ?>
+   ```
+
+6. Use the card payment method (VISA, MASTERCARD):
+
+   ```php
+   <?php
+   // paiementCard(amount, phoneNumber, typeCard, firstName, lastName, email, country, address, district, currency, callback_info, custom_id)
+   $responseCard = $skeleton->paiementCard(100, "2290166000000", "VISA", "Jon", "Doe", "jondoe@gmail.com", "BJ", "Cotonou", "Littoral", "XOF", "order 123", "my-ref-125");
+
+   if (isset($responseCard["url"])) {
+       header("Location: " . $responseCard["url"]);
+       exit();
+   } else {
+       echo "Card payment could not be initialized";
+   }
+   ?>
+   ```
+
+7. You can also integrate a payment button in your PHP page:
+
+   ```php
+   <?php
+   require 'vendor/autoload.php';
    $price = 50;
    $id = "shop's id";
    $token = "token key API";
@@ -81,10 +143,11 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    composer require feexpay/feexpay-php
    ```
 
-2. Create a route in your `web.php` file:
+2. Create the routes in your `web.php` file:
    ```php
    Route::controller(YourController::class)->group(function () {
        Route::get('feexpay', 'feexpay')->name('feexpay');
+       Route::get('feexpay-card', 'feexpayCard')->name('feexpay-card');
    });
    ```
 
@@ -99,54 +162,23 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
    class YourController extends Controller
    {
+       // Using the mobile network payment method (MTN, MOOV, MTN CG, ...)
        public function feexpay()
        {
-
-            // Using the card payment method (VISA, MASTERCARD)
-
-           $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-           $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
-           $redirectUrl = $responseCard["url"];
-           return redirect()->away($redirectUrl);
-
-
-           // Using the mobile network payment method (MTN, MOOV, MTN CG, ...)
-
-
             $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
             $reference = $skeleton->paiementLocal(100, "2290166000000", "MTN", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-123");
             if ($reference === null) {
                 return response($skeleton->getLastError()["message"])->setStatusCode(422);
             }
             $status = $skeleton->getPaiementStatus($reference);
-            var_dump($status);
+            return response()->json($status);
        }
-   }
-   ```
 
-### or 
-
-   ```
-   <?php
-
-   namespace App\Http\Controllers;
-   use Feexpay\FeexpayPhp\FeexpayClass;
-   use Illuminate\Http\Request;
-
-   class YourController extends Controller
-   {
-       public function feexpay()
-
+       // Using the card payment method (VISA, MASTERCARD)
+       public function feexpayCard()
        {
-
-        // Using the card payment method (VISA, MASTERCARD)
-
-
-           $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
-            $responseCard = $skeleton->paiementCard("amount", "phoneNumber(0166000000)", "typeCard (VISA, MASTERCARD)", "Jon", "Doe", "jondoe@gmail.com", "country(Benin)", "address(Cotonou)", "district(Littoral)", "currency(XOF, USD, EUR)");
-
-            // Display response structure for debugging purposes
-            var_dump($responseCard);
+            $skeleton = new FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
+            $responseCard = $skeleton->paiementCard(100, "2290166000000", "VISA", "Jon", "Doe", "jondoe@gmail.com", "BJ", "Cotonou", "Littoral", "XOF", "order 123", "my-ref-125");
 
             // Check for the presence of the "url" key
             if (isset($responseCard["url"])) {
@@ -159,7 +191,6 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
        }
    }
    ```
-
 
 4. Integrate the Feexpay button in a view, for example, `welcome.blade.php`:
 
@@ -203,6 +234,14 @@ Make sure you have your views file for our example is welcome.blade.php
    ```
 
 You can now access the URL defined in the route to perform payments using Feexpay.
+
+### Security
+
+Never commit your API key to a repository: keep it in an environment variable (for example in your `.env` file with Laravel) and read it from there.
+
+### Documentation
+
+The full API documentation (networks, countries, webhooks) is available at [https://docs.feexpay.me](https://docs.feexpay.me).
 
 
 Make sure to adapt values like "shop's id", "token key API", addresses, amounts, and other details according to your own configuration and needs.
