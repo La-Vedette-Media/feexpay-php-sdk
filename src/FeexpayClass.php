@@ -11,6 +11,13 @@ class FeexpayClass
      */
     const API_BASE_URL = 'https://api-v2.feexpay.me';
 
+    /**
+     * cURL timeouts (seconds). Certificates are checked against the system CA store.
+     * No read timeout on payment requests: they wait for the customer to validate on their phone.
+     */
+    const CONNECT_TIMEOUT = 10;
+    const READ_TIMEOUT = 30;
+
     public $id;
     public $token;
     public $callback_url;
@@ -44,40 +51,38 @@ class FeexpayClass
     }
 
     public function init($amount, $componentId, $use_custom_button = false, $custom_button_id = "",  $description = "", $callback_info=""){
-        $token = $this->token;
-        $id = $this->id;
-        $callback_url = $this->callback_url;
-        $error_callback_url = $this->error_callback_url;
-        $mode = $this->mode;
+        $config = array(
+            'id' => $this->id,
+            'amount' => is_numeric($amount) ? $amount + 0 : null,
+            'token' => $this->token,
+            'callback_url' => $this->callback_url,
+            'mode' => $this->mode,
+            'custom_button' => (string) $use_custom_button,
+            'id_custom_button' => $custom_button_id,
+            'description' => $description,
+            'callback_info' => $callback_info,
+            'error_callback_url' => $this->error_callback_url,
+        );
+
+        // Valeurs encodées en JSON (avec <, >, ', " et & échappés) : une description ou un
+        // callback_info contenant des guillemets ou </script> ne peut plus injecter de JavaScript
+        $flags = JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP;
 
         echo "
         <script src='" . self::API_BASE_URL . "/feexpay-javascript-sdk/index.js'></script>
         <script type='text/javascript'>
-
-        FeexPayButton.init('$componentId',{
-             id:'$id',
-             amount:$amount,
-             token:'$token',
-             callback_url:'$callback_url',
-             mode: '$mode',
-             custom_button: '$use_custom_button',
-            id_custom_button: '$custom_button_id',
-            description: '$description',
-            callback_info: '$callback_info',
-            error_callback_url: '$error_callback_url',
-         })
+        FeexPayButton.init(" . json_encode((string) $componentId, $flags) . ", " . json_encode($config, $flags) . ");
         </script>";
     }
 
     public function getIdAndMarchanName()
     {
-        try {
-            $responseCurl = $this->curlGet(self::API_BASE_URL . "/api/shop/$this->id/get_shop");
-            $responseData = json_decode((string) $responseCurl);
-            return $responseData;
-        } catch (\Throwable $th) {
-            echo "Id Request not send";
+        $responseCurl = $this->curlGet(self::API_BASE_URL . "/api/shop/" . rawurlencode((string) $this->id) . "/get_shop");
+        if ($responseCurl === false) {
+            return null;
         }
+
+        return json_decode((string) $responseCurl);
     }
 
     /**
@@ -94,10 +99,14 @@ class FeexpayClass
                 'Accept: application/json',
                 'Authorization: Bearer ' . $this->token,
             ),
-            CURLOPT_CAINFO => __DIR__ . DIRECTORY_SEPARATOR . 'certificats/IXRCERT.crt',
+            CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT,
+            CURLOPT_TIMEOUT => self::READ_TIMEOUT,
         ));
 
         $result = curl_exec($ch);
+        if ($result === false) {
+            $this->lastError = array('message' => curl_error($ch), 'response' => null);
+        }
         curl_close($ch);
 
         return $result;
@@ -125,7 +134,7 @@ class FeexpayClass
                 'Content-Type: application/json',
                 'Authorization: Bearer ' . $this->token,
             ),
-            CURLOPT_CAINFO => __DIR__ . DIRECTORY_SEPARATOR . 'certificats/IXRCERT.crt',
+            CURLOPT_CONNECTTIMEOUT => self::CONNECT_TIMEOUT,
         );
 
         $ch = curl_init();
@@ -223,41 +232,43 @@ class FeexpayClass
         return null;
     }
 
+    /**
+     * Mobile money payment with a redirection page (Wave, Orange...)
+     * @return array|false ['payment_url' => string, 'reference' => string, 'order_id' => string], false on failure (see getLastError())
+     */
     public function requestToPayWeb(float $amount, string $phoneNumber, string $operatorName, string $fullname, string $email, string $callback_info, string $custom_id, string $cancel_url="https://feexpay.me/en", string $return_url="https://feexpay.me/en")
     {
-        $responseIdGet = $this->getIdAndMarchanName();
-        $nameMarchandExist = isset($responseIdGet->name);
-        if ($nameMarchandExist == true) {
+        $this->lastError = null;
 
-            try {
-                $post = array("phoneNumber" => $phoneNumber, "amount" => $amount, "reseau" => $operatorName,
-                    "shop" => $this->id, "first_name" => $fullname, "email" => $email,
-                    "callback_info" => $callback_info, "reference" => $custom_id, 'return_url' => $return_url,
-                    'cancel_url' => $cancel_url);
-                $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/requesttopay/integration", $post);
-                $responseCurlPostPaiementData = json_decode((string) $responseCurlPostPaiement);
-
-                if (!$responseCurlPostPaiementData) {
-                    echo "Réponse invalide de l'API\n";
-                    return false;
-                }
-
-                if (isset($responseCurlPostPaiementData->status) && $responseCurlPostPaiementData->status == "FAILED") {
-                    echo "Paramètres incorrects\n";
-                    return false;
-                }
-
-                return array(
-                    'payment_url' => $responseCurlPostPaiementData->payment_url ?? '',
-                    'reference' => $responseCurlPostPaiementData->reference ?? '',
-                    'order_id' => $responseCurlPostPaiementData->order_id ?? '',
-                );
-            } catch (\Throwable $th) {
-                echo "Request Not Send";
-            }
-        } else {
+        $post = array("phoneNumber" => $phoneNumber, "amount" => $amount, "reseau" => $operatorName,
+            "shop" => $this->id, "first_name" => $fullname, "email" => $email,
+            "callback_info" => $callback_info, "reference" => $custom_id, 'return_url' => $return_url,
+            'cancel_url' => $cancel_url);
+        $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/requesttopay/integration", $post);
+        if ($responseCurlPostPaiement === false) {
             return false;
         }
+
+        $responseCurlPostPaiementData = json_decode((string) $responseCurlPostPaiement);
+
+        if (!is_object($responseCurlPostPaiementData)
+            || (isset($responseCurlPostPaiementData->status) && $responseCurlPostPaiementData->status == "FAILED")) {
+            $this->setApiError($responseCurlPostPaiementData, (string) $responseCurlPostPaiement);
+            return false;
+        }
+
+        $paymentUrl = $responseCurlPostPaiementData->payment_url ?? '';
+        // Only https payment pages: the merchant redirects its customer to this URL
+        if ($paymentUrl !== '' && strpos($paymentUrl, 'https://') !== 0) {
+            $this->lastError = array('message' => 'URL de paiement refusée (https attendu)', 'response' => $responseCurlPostPaiementData);
+            return false;
+        }
+
+        return array(
+            'payment_url' => $paymentUrl,
+            'reference' => $responseCurlPostPaiementData->reference ?? '',
+            'order_id' => $responseCurlPostPaiementData->order_id ?? '',
+        );
     }
 
     /**
@@ -328,34 +339,70 @@ class FeexpayClass
         return null;
     }
 
+    /**
+     * Status of a payment
+     * @return array|false ['amount', 'clientNum', 'status', 'reference', 'shop'], false on failure (see getLastError())
+     */
     public function getPaiementStatus($paiementRef)
     {
+        $this->lastError = null;
+
         if (!$paiementRef) {
-            echo "REFERENCE_INVALID";
+            $this->lastError = array('message' => 'REFERENCE_INVALID', 'response' => null);
             return false;
         }
 
-        try {
-            $responseCurlStatus = $this->curlGet(self::API_BASE_URL . "/api/transactions/public/single/status/" . rawurlencode((string) $paiementRef));
-            $statusData = json_decode((string) $responseCurlStatus);
+        $responseCurlStatus = $this->curlGet(self::API_BASE_URL . "/api/transactions/public/single/status/" . rawurlencode((string) $paiementRef));
+        if ($responseCurlStatus === false) {
+            return false;
+        }
 
-            //if (isset($statusData->status)) {
-            // API v2 returns the payer number as "phoneNumber" (v1 used payer->partyId)
-            $clientNum = $statusData->phoneNumber ?? $statusData->phone_number ?? $statusData->payer->partyId ?? '';
-            $responseSendArray = array(
-                "amount"=>$statusData->amount,
-                "clientNum"=>$clientNum,
-                "status"=>$statusData->status,
-                "reference"=>$statusData->reference
-            );
-            return $responseSendArray;
-           /*  }
-            else {
-                echo "Réponse inattendue de l'API";
-            } */
+        $statusData = json_decode((string) $responseCurlStatus);
+        if (!is_object($statusData) || !isset($statusData->status)) {
+            $this->setApiError($statusData, (string) $responseCurlStatus);
+            return false;
         }
-        catch (\Throwable $th) {
-            echo "Get Status Request Not Send";
+
+        // API v2 returns the payer number as "phoneNumber" (v1 used payer->partyId)
+        $clientNum = $statusData->phoneNumber ?? $statusData->phone_number ?? $statusData->payer->partyId ?? '';
+
+        return array(
+            "amount" => $statusData->amount ?? null,
+            "clientNum" => $clientNum,
+            "status" => $statusData->status,
+            "reference" => $statusData->reference ?? $paiementRef,
+            "shop" => $statusData->shop ?? null,
+        );
+    }
+
+    /**
+     * Server-side check before delivering an order: the payment is successful, covers the
+     * expected amount and belongs to this shop. The amount and the JavaScript callback come
+     * from the customer's browser and must never be trusted on their own.
+     */
+    public function isPaymentSuccessful($paiementRef, float $expectedAmount): bool
+    {
+        $status = $this->getPaiementStatus($paiementRef);
+        if ($status === false) {
+            return false;
         }
+
+        if (!in_array(strtoupper((string) $status['status']), array('SUCCESSFUL', 'SUCCESS'), true)) {
+            $this->lastError = array('message' => 'Paiement non réussi : ' . $status['status'], 'response' => $status);
+            return false;
+        }
+
+        // The API rounds the amount to the unit
+        if (!is_numeric($status['amount']) || (float) $status['amount'] < floor($expectedAmount)) {
+            $this->lastError = array('message' => 'Montant payé inférieur au montant attendu', 'response' => $status);
+            return false;
+        }
+
+        if (!empty($status['shop']) && $status['shop'] !== $this->id) {
+            $this->lastError = array('message' => 'Paiement effectué sur un autre shop', 'response' => $status);
+            return false;
+        }
+
+        return true;
     }
 }

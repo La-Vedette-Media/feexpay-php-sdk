@@ -28,7 +28,7 @@
 *~
 
 # Local tooling settings
-/.claude/settings.local.json
+/.claude/
 
 # OS files
 .DS_Store

@@ -81,11 +81,26 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    //     "clientNum" => "2290166000000",
    //     "status"    => "SUCCESSFUL",   // or "PENDING", "FAILED"
    //     "reference" => "63ecaff1-7572-413d-93bb-8cba92bb8c2c",
+   //     "shop"      => "shop's id",
    // ]
    ?>
    ```
 
-   `getPaiementStatus()` returns `false` when the reference is empty.
+   `getPaiementStatus()` returns `false` when the reference is empty or the request fails
+   (reason in `getLastError()`).
+
+   **Before delivering an order**, check the payment on your server. The amount and the
+   JavaScript callback come from the customer's browser and can be modified:
+
+   ```php
+   <?php
+   if ($skeleton->isPaymentSuccessful($reference, $orderTotal)) {
+       // successful, amount >= $orderTotal and paid to this shop
+   } else {
+       echo $skeleton->getLastError()["message"];
+   }
+   ?>
+   ```
 
 5. Use the web payment method for the networks that redirect the customer to a payment page:
 
@@ -95,7 +110,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    $response = $skeleton->requestToPayWeb(100, "2250700000000", "network", "Jon Doe", "jondoe@gmail.com", "order 123", "my-ref-124", "https://your-site.com/cancel", "https://your-site.com/return");
 
    if ($response === false || empty($response["payment_url"])) {
-       echo "Payment could not be initialized";
+       echo "Payment could not be initialized: " . ($skeleton->getLastError()["message"] ?? "");
    } else {
        // $response["reference"] and $response["order_id"] identify the payment
        header("Location: " . $response["payment_url"]);

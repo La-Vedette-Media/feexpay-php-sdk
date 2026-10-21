@@ -4,6 +4,21 @@ All notable changes to `FeexpayPhp` will be documented in this file.
 
 Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) principles.
 
+## Unreleased
+
+### Added
+- `isPaymentSuccessful($reference, $expectedAmount)`: server-side check that a payment is successful, covers the expected amount and belongs to the shop
+- `getPaiementStatus()` result contains the `shop` returned by the API
+
+### Changed
+- Certificates are checked against the system CA store: the bundled ISRG Root X1 certificate (`src/certificats/IXRCERT.crt`) is removed, so a change of the API certificate chain no longer breaks the SDK
+- Requests use a 10 s connection timeout; `get_shop` and status requests a 30 s total timeout (payment requests still wait for the customer)
+- `requestToPayWeb()` no longer calls `get_shop` before each payment and refuses a non-https `payment_url`
+- The library no longer prints messages (`echo`): `requestToPayWeb()`, `getPaiementStatus()` and `getIdAndMarchanName()` return `false` / `null` with the reason in `getLastError()`
+
+### Security
+- `init()` encodes its configuration as JSON: a description, `callback_info` or URL containing quotes or `</script>` can no longer inject JavaScript into the page
+
 ## 2.1.0 - 2026-10-06
 
 ### Added
