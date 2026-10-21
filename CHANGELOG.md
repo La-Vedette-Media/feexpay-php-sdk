@@ -11,6 +11,7 @@ Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) princi
 - `getPaiementStatus()` result contains the `shop` returned by the API
 
 ### Changed
+- In `SANDBOX` mode, API requests now target `https://sandbox-api.feexpay.me` (they previously always went to the production API `https://api-v2.feexpay.me`)
 - Certificates are checked against the system CA store: the bundled ISRG Root X1 certificate (`src/certificats/IXRCERT.crt`) is removed, so a change of the API certificate chain no longer breaks the SDK
 - Requests use a 10 s connection timeout; `get_shop` and status requests a 30 s total timeout (payment requests still wait for the customer)
 - `requestToPayWeb()` no longer calls `get_shop` before each payment and refuses a non-https `payment_url`

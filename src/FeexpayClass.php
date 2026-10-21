@@ -12,6 +12,11 @@ class FeexpayClass
     const API_BASE_URL = 'https://api-v2.feexpay.me';
 
     /**
+     * Base URL of the Feexpay sandbox API (used when mode is SANDBOX)
+     */
+    const SANDBOX_API_BASE_URL = 'https://sandbox-api.feexpay.me';
+
+    /**
      * cURL timeouts (seconds). Certificates are checked against the system CA store.
      * No read timeout on payment requests: they wait for the customer to validate on their phone.
      */
@@ -77,12 +82,20 @@ class FeexpayClass
 
     public function getIdAndMarchanName()
     {
-        $responseCurl = $this->curlGet(self::API_BASE_URL . "/api/shop/" . rawurlencode((string) $this->id) . "/get_shop");
+        $responseCurl = $this->curlGet($this->apiBaseUrl() . "/api/shop/" . rawurlencode((string) $this->id) . "/get_shop");
         if ($responseCurl === false) {
             return null;
         }
 
         return json_decode((string) $responseCurl);
+    }
+
+    /**
+     * API host matching the configured mode (SANDBOX → sandbox API, otherwise production)
+     */
+    private function apiBaseUrl(): string
+    {
+        return strtoupper(trim((string) $this->mode)) === 'SANDBOX' ? self::SANDBOX_API_BASE_URL : self::API_BASE_URL;
     }
 
     /**
@@ -216,7 +229,7 @@ class FeexpayClass
         );
 
         // No CURLOPT_TIMEOUT: the request waits for the customer to validate on their phone
-        $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/requesttopay/integration", $post);
+        $responseCurlPostPaiement = $this->curlPost($this->apiBaseUrl() . "/api/transactions/requesttopay/integration", $post);
         if ($responseCurlPostPaiement === false) {
             return null;
         }
@@ -244,7 +257,7 @@ class FeexpayClass
             "shop" => $this->id, "first_name" => $fullname, "email" => $email,
             "callback_info" => $callback_info, "reference" => $custom_id, 'return_url' => $return_url,
             'cancel_url' => $cancel_url);
-        $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/requesttopay/integration", $post);
+        $responseCurlPostPaiement = $this->curlPost($this->apiBaseUrl() . "/api/transactions/requesttopay/integration", $post);
         if ($responseCurlPostPaiement === false) {
             return false;
         }
@@ -319,7 +332,7 @@ class FeexpayClass
             return null;
         }
 
-        $responseCurlPostPaiement = $this->curlPost(self::API_BASE_URL . "/api/transactions/public/requesttopay/init", $post);
+        $responseCurlPostPaiement = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/init", $post);
         if ($responseCurlPostPaiement === false) {
             return null;
         }
@@ -352,7 +365,7 @@ class FeexpayClass
             return false;
         }
 
-        $responseCurlStatus = $this->curlGet(self::API_BASE_URL . "/api/transactions/public/single/status/" . rawurlencode((string) $paiementRef));
+        $responseCurlStatus = $this->curlGet($this->apiBaseUrl() . "/api/transactions/public/single/status/" . rawurlencode((string) $paiementRef));
         if ($responseCurlStatus === false) {
             return false;
         }

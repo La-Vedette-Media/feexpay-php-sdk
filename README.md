@@ -53,6 +53,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    // Without Composer: include 'src/FeexpayClass.php';
 
    $skeleton = new Feexpay\FeexpayPhp\FeexpayClass("shop's id", "token key API", "callback_url", "mode (LIVE, SANDBOX)");
+   // LIVE → https://api-v2.feexpay.me, SANDBOX → https://sandbox-api.feexpay.me (use your sandbox shop id and API key)
 
    // Using the mobile network payment method (MTN, MOOV, MTN CG, ...)
    // paiementLocal(amount, phoneNumber, network, fullname, email, callback_info, custom_id, otp = "")
