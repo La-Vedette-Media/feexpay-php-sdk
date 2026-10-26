@@ -182,21 +182,207 @@ class FeexpayClass
      */
     private function setApiError($data, string $raw)
     {
-        $message = "Réponse inattendue de l'API";
-        if (is_object($data)) {
-            foreach (array('message', 'error', 'errors', 'status') as $key) {
-                if (!empty($data->$key)) {
-                    $value = $data->$key;
-                    $message = is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE);
-                    break;
+        $this->lastError = array(
+            'message' => $this->interpretApiError($data),
+            'response' => $data !== null ? $data : $raw,
+        );
+    }
+
+    /**
+     * True when the decoded response is an API error ({ statusCode: 4xx/5xx, ... })
+     * @param mixed $data decoded API response
+     */
+    private function isApiError($data): bool
+    {
+        return is_object($data) && isset($data->statusCode) && is_int($data->statusCode) && $data->statusCode >= 400;
+    }
+
+    /**
+     * Turn an API error response into a readable message for the payer.
+     * Formats returned by the API:
+     *  - business error   : { statusCode, message, code? }
+     *  - validation error : { statusCode: 400, message: "Validation failed", errors: [{ property, constraints }] }
+     *  - operator error   : { message: "Wave API Error", code: "WAVE_API_ERROR", details: <operator response> }
+     *                       or { error: "Wave Sénégal API Error", message: <operator response> }
+     *  - 5xx error        : { statusCode, message: "Internal Server Error" } (details hidden by the API)
+     * @param mixed $data decoded API response
+     */
+    private function interpretApiError($data): string
+    {
+        $fallback = "La demande de paiement a échoué. Veuillez réessayer.";
+        if (!is_object($data)) {
+            return "Réponse inattendue de l'API";
+        }
+
+        $statusCode = $data->statusCode ?? null;
+        if (is_int($statusCode) && $statusCode >= 500) {
+            return "Service momentanément indisponible. Veuillez réessayer plus tard.";
+        }
+
+        $code = isset($data->code) && is_string($data->code) ? $data->code : '';
+
+        if (isset($data->errors) && is_array($data->errors)) {
+            $fieldMessages = array(
+                'phoneNumber' => "Numéro de téléphone invalide.",
+                'amount' => "Montant invalide : il doit être compris entre 10 et 2 000 000.",
+                'email' => "Adresse email invalide.",
+                'reseau' => "Ce réseau n'est pas pris en charge.",
+                'shop' => "Identifiant de boutique manquant.",
+                'description' => "La description ne doit pas dépasser 40 caractères.",
+                'callback_info' => "Le champ callback_info est invalide.",
+                'first_name' => "Nom invalide.",
+                'otp' => "Code OTP invalide.",
+            );
+            $messages = array();
+            foreach ($data->errors as $error) {
+                $property = is_object($error) && isset($error->property) ? $error->property : '';
+                if (isset($fieldMessages[$property])) {
+                    $messages[] = $fieldMessages[$property];
+                } elseif (is_object($error) && !empty($error->constraints) && is_array($error->constraints)) {
+                    $messages[] = (string) $error->constraints[0];
                 }
+            }
+            if (!empty($messages)) {
+                return implode(' ', array_unique($messages));
             }
         }
 
-        $this->lastError = array(
-            'message' => $message,
-            'response' => $data !== null ? $data : $raw,
+        $error = isset($data->error) && is_string($data->error) ? $data->error : '';
+        if (preg_match('/_(API|DISBURSEMENT)_ERROR$/', $code) || preg_match('/API Error$/', $error)) {
+            $details = $data->details ?? (isset($data->message) && !is_string($data->message) ? $data->message : null);
+            return $this->interpretOperatorError($this->operatorName($code, $error), $details);
+        }
+        if (preg_match('/_COMMUNICATION_ERROR$/', $code)) {
+            return $this->operatorName($code, $error) . " est momentanément injoignable. Veuillez réessayer plus tard.";
+        }
+
+        $codeMessages = array(
+            'UNAUTHORIZED' => "Clé API invalide.",
+            'API_KEY_BLOCKED' => "La clé API est bloquée.",
+            'ACCESS_DENIED' => "Ce moyen de paiement n'est pas activé pour ce marchand.",
+            'NETWORK_UNAVAILABLE' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
+            'NOT_FOUND' => "Transaction introuvable.",
         );
+        if (isset($codeMessages[$code])) {
+            return $codeMessages[$code];
+        }
+
+        $message = $data->message ?? null;
+        if (is_array($message)) {
+            $message = implode(', ', $message);
+        }
+        if (is_string($message) && $message !== '') {
+            $businessMessages = array(
+                '/^Merchant or Shop not found$/i' => "Boutique introuvable : vérifiez l'identifiant de la boutique et la clé API.",
+                '/^Shop is disabled$/i' => "Cette boutique est désactivée.",
+                '/Wave aggregated merchant not configured/i' => "Le paiement Wave n'est pas encore activé pour ce marchand.",
+                '/channel not configured/i' => "Ce réseau n'est pas disponible pour le moment.",
+                '/not available yet/i' => "Ce réseau n'est pas encore disponible.",
+                '/under maintenance|^Network Unavailable$/i' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
+                '/otp is required/i' => "Le code OTP est requis.",
+            );
+            foreach ($businessMessages as $pattern => $readable) {
+                if (preg_match($pattern, $message)) {
+                    return $readable;
+                }
+            }
+            if ($message !== 'Validation failed' && $message !== 'Bad Request') {
+                return $message;
+            }
+        }
+
+        if (isset($data->status) && is_string($data->status) && $data->status !== '') {
+            return $data->status;
+        }
+
+        return $fallback;
+    }
+
+    /**
+     * Operator name from the error code (WAVE_API_ERROR) or label (Wave Sénégal API Error)
+     */
+    private function operatorName(string $code, string $error): string
+    {
+        $operators = array(
+            'WAVE' => 'Wave', 'MTN' => 'MTN', 'MOOV_BJ' => 'Moov', 'MOOV_CI' => 'Moov', 'MOOV_TG' => 'Moov',
+            'CELTIIS_BJ' => 'Celtiis', 'TOGOCOM' => 'Togocom',
+        );
+        $key = preg_replace('/_(API|COMMUNICATION)_ERROR$|_DISBURSEMENT_ERROR$/', '', $code);
+        if (isset($operators[$key])) {
+            return $operators[$key];
+        }
+        if (preg_match('/^(Wave|Orange|Free)/', $error, $match)) {
+            return $match[1];
+        }
+
+        return "l'opérateur";
+    }
+
+    /**
+     * Readable message from the operator response forwarded by the API (Wave, MTN...)
+     * @param mixed $details
+     */
+    private function interpretOperatorError(string $operator, $details): string
+    {
+        $fallback = "Le paiement a été refusé par " . $operator . ". Veuillez réessayer.";
+        if (is_string($details) && $details !== '') {
+            return $operator . " : " . $details;
+        }
+        if (!is_object($details)) {
+            return $fallback;
+        }
+
+        $validation = isset($details->details) && is_array($details->details) ? $details->details : array();
+        foreach ($validation as $item) {
+            $loc = is_object($item) && isset($item->loc) && is_array($item->loc) ? $item->loc : array();
+            if (preg_grep('/mobile|phone|msisdn/i', array_map('strval', $loc))) {
+                $phone = preg_match('/\+?\d{6,}/', (string) ($item->msg ?? ''), $match) ? " (" . $match[0] . ")" : "";
+                return "Numéro de téléphone invalide pour " . $operator . $phone . ". Vérifiez le numéro saisi.";
+            }
+            if (in_array('amount', $loc, true)) {
+                return "Montant refusé par " . $operator . ".";
+            }
+        }
+
+        $operatorCodes = array(
+            // Wave
+            'insufficient-funds' => "Solde Wave insuffisant.",
+            'blocked-account' => "Ce compte Wave est bloqué.",
+            'recipient-account-blocked' => "Ce compte Wave est bloqué.",
+            'recipient-account-inactive' => "Ce compte Wave n'est pas actif.",
+            'recipient-limit-exceeded' => "Le plafond de ce compte Wave est atteint.",
+            'recipient-minor' => "Ce compte Wave ne peut pas effectuer ce paiement.",
+            'country-mismatch' => "Ce numéro n'est pas un compte Wave de ce pays.",
+            'currency-mismatch' => "Cette devise n'est pas acceptée par Wave.",
+            'invalid-aggregated-merchant-id' => "Le paiement Wave n'est pas activé pour ce marchand.",
+            'aggregated-merchant-required' => "Le paiement Wave n'est pas activé pour ce marchand.",
+            'too-many-requests' => "Trop de tentatives. Veuillez patienter quelques instants.",
+            'service-unavailable' => "Wave est momentanément indisponible. Veuillez réessayer plus tard.",
+            'internal-server-error' => "Wave est momentanément indisponible. Veuillez réessayer plus tard.",
+            // MTN MoMo
+            'PAYER_NOT_FOUND' => "Ce numéro n'a pas de compte MTN Mobile Money.",
+            'NOT_ENOUGH_FUNDS' => "Solde MTN Mobile Money insuffisant.",
+            'PAYER_LIMIT_REACHED' => "Le plafond de ce compte MTN Mobile Money est atteint.",
+            'NOT_ALLOWED' => "Ce compte MTN Mobile Money n'est pas autorisé à payer.",
+            'NOT_ALLOWED_TARGET_ENVIRONMENT' => "Ce compte MTN Mobile Money n'est pas autorisé à payer.",
+            'INVALID_CURRENCY' => "Cette devise n'est pas acceptée par MTN.",
+            'SERVICE_UNAVAILABLE' => "MTN est momentanément indisponible. Veuillez réessayer plus tard.",
+            'INTERNAL_PROCESSING_ERROR' => "MTN est momentanément indisponible. Veuillez réessayer plus tard.",
+            'COULD_NOT_PERFORM_TRANSACTION' => "MTN n'a pas pu effectuer la transaction. Veuillez réessayer.",
+        );
+        $operatorCode = isset($details->code) && is_string($details->code) ? $details->code : '';
+        if (isset($operatorCodes[$operatorCode])) {
+            return $operatorCodes[$operatorCode];
+        }
+
+        foreach (array('message', 'reason', 'error_description', 'error') as $key) {
+            if (isset($details->$key) && is_string($details->$key) && $details->$key !== ''
+                && strcasecmp($details->$key, 'Request invalid') !== 0) {
+                return $operator . " : " . $details->$key;
+            }
+        }
+
+        return $fallback;
     }
 
     /**
@@ -265,6 +451,7 @@ class FeexpayClass
         $responseCurlPostPaiementData = json_decode((string) $responseCurlPostPaiement);
 
         if (!is_object($responseCurlPostPaiementData)
+            || $this->isApiError($responseCurlPostPaiementData)
             || (isset($responseCurlPostPaiementData->status) && $responseCurlPostPaiementData->status == "FAILED")) {
             $this->setApiError($responseCurlPostPaiementData, (string) $responseCurlPostPaiement);
             return false;
