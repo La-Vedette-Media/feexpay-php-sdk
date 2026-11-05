@@ -120,7 +120,37 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    ?>
    ```
 
-6. Use the card payment method (VISA, MASTERCARD):
+6. Use the B-MO payment method (Benin, `LIVE` mode only). The payment is done in two steps:
+   B-MO sends a confirmation code by SMS to the payer, then you confirm it with this code.
+   Nothing is debited before the confirmation.
+
+   ```php
+   <?php
+   // paiementBmo(amount, phoneNumber, firstName, lastName, email = "", description = "", callback_info = "")
+   // amount: between 200 and 2 000 000. First and last name are required for a payer who is not yet a B-MO customer
+   $bmo = $skeleton->paiementBmo(1000, "2290166000000", "Jon", "Doe", "jondoe@gmail.com", "Order 123");
+
+   if ($bmo === null || $bmo["status"] === "FAILED") {
+       echo $skeleton->getLastError()["message"]; // e.g. "Solde B-MO insuffisant pour effectuer ce paiement."
+   } elseif ($bmo["status"] === "PENDING") {
+       // Ask the payer for the code received by SMS, then:
+       $result = $skeleton->confirmPaiementBmo($bmo["reference"], $otp);
+
+       if ($result !== null && $result["status"] === "SUCCESSFUL") {
+           // paid
+       } elseif ($result === null) {
+           // e.g. wrong or expired code: the payment stays PENDING, the payer can try again
+           echo $skeleton->getLastError()["message"];
+       } else {
+           echo $result["message"] ?? "";  // FAILED: readable reason ("reason" holds the raw B-MO reason)
+       }
+
+       // If the payer gives up: $skeleton->cancelPaiementBmo($bmo["reference"]);
+   }
+   ?>
+   ```
+
+7. Use the card payment method (VISA, MASTERCARD):
 
    ```php
    <?php
@@ -136,7 +166,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    ?>
    ```
 
-7. You can also integrate a payment button in your PHP page:
+8. You can also integrate a payment button in your PHP page:
 
    ```php
    <?php
