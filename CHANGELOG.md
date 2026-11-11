@@ -7,10 +7,13 @@ Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) princi
 ## Unreleased
 
 ### Added
+- B-MO payment (Benin): `paiementBmo()` starts the payment (confirmation code sent by SMS), `confirmPaiementBmo()` confirms it with the code, `cancelPaiementBmo()` cancels it
+- Readable B-MO failure reasons (e.g. `INSUFFICIENT BALANCE` → "Solde B-MO insuffisant pour effectuer ce paiement.")
 - `isPaymentSuccessful($reference, $expectedAmount)`: server-side check that a payment is successful, covers the expected amount and belongs to the shop
 - `getPaiementStatus()` result contains the `shop` returned by the API
 
 ### Changed
+- Amount validation errors show the limit returned by the API (e.g. "le minimum est de 200") instead of a fixed 10 – 2 000 000 range
 - In `SANDBOX` mode, API requests now target `https://sandbox-api.feexpay.me` (they previously always went to the production API `https://api-v2.feexpay.me`)
 - Certificates are checked against the system CA store: the bundled ISRG Root X1 certificate (`src/certificats/IXRCERT.crt`) is removed, so a change of the API certificate chain no longer breaks the SDK
 - Requests use a 10 s connection timeout; `get_shop` and status requests a 30 s total timeout (payment requests still wait for the customer)

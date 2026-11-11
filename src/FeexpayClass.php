@@ -23,6 +23,12 @@ class FeexpayClass
     const CONNECT_TIMEOUT = 10;
     const READ_TIMEOUT = 30;
 
+    /**
+     * B-MO (Benin) amount limits accepted by the API
+     */
+    const BMO_MIN_AMOUNT = 200;
+    const BMO_MAX_AMOUNT = 2000000;
+
     public $id;
     public $token;
     public $callback_url;
@@ -236,7 +242,10 @@ class FeexpayClass
             $messages = array();
             foreach ($data->errors as $error) {
                 $property = is_object($error) && isset($error->property) ? $error->property : '';
-                if (isset($fieldMessages[$property])) {
+                $amountLimit = $property === 'amount' ? $this->amountLimitMessage($error) : null;
+                if ($amountLimit !== null) {
+                    $messages[] = $amountLimit;
+                } elseif (isset($fieldMessages[$property])) {
                     $messages[] = $fieldMessages[$property];
                 } elseif (is_object($error) && !empty($error->constraints) && is_array($error->constraints)) {
                     $messages[] = (string) $error->constraints[0];
@@ -262,6 +271,9 @@ class FeexpayClass
             'ACCESS_DENIED' => "Ce moyen de paiement n'est pas activé pour ce marchand.",
             'NETWORK_UNAVAILABLE' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
             'NOT_FOUND' => "Transaction introuvable.",
+            'INVALID_OTP' => "Code de confirmation invalide.",
+            'INVALID_CONFIRMATION_CODE' => "Code de confirmation invalide ou expiré.",
+            'ALREADY_FINALIZED' => "Cette transaction a déjà été traitée.",
         );
         if (isset($codeMessages[$code])) {
             return $codeMessages[$code];
@@ -280,6 +292,7 @@ class FeexpayClass
                 '/not available yet/i' => "Ce réseau n'est pas encore disponible.",
                 '/under maintenance|^Network Unavailable$/i' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
                 '/otp is required/i' => "Le code OTP est requis.",
+                '/first_name and last_name are required/i' => "Le nom et le prénom sont requis pour un premier paiement B-MO.",
             );
             foreach ($businessMessages as $pattern => $readable) {
                 if (preg_match($pattern, $message)) {
@@ -299,13 +312,79 @@ class FeexpayClass
     }
 
     /**
+     * Amount limit from a validation error ("amount must not be less than 200"): the limits
+     * depend on the network (e.g. B-MO: 200 minimum)
+     * @param mixed $error
+     */
+    private function amountLimitMessage($error)
+    {
+        $constraints = is_object($error) && isset($error->constraints) && is_array($error->constraints) ? $error->constraints : array();
+        foreach ($constraints as $constraint) {
+            if (preg_match('/less than (\d+)/', (string) $constraint, $match)) {
+                return "Montant invalide : le minimum est de " . number_format((int) $match[1], 0, ',', ' ') . ".";
+            }
+            if (preg_match('/greater than (\d+)/', (string) $constraint, $match)) {
+                return "Montant invalide : le maximum est de " . number_format((int) $match[1], 0, ',', ' ') . ".";
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Readable message from the failure reason returned by B-MO ("INSUFFICIENT BALANCE"...)
+     */
+    private function bmoFailureMessage(string $reason): string
+    {
+        if ($reason === '') {
+            return "Le paiement a été refusé par B-MO.";
+        }
+        $reasons = array(
+            'INSUFFICIENT BALANCE' => "Solde B-MO insuffisant pour effectuer ce paiement.",
+        );
+        $key = preg_replace('/[_\s]+/', ' ', strtoupper(trim($reason)));
+
+        return $reasons[$key] ?? "Le paiement a été refusé par B-MO : " . $reason;
+    }
+
+    /**
+     * Result of a B-MO request: the API response as an array, with a readable "message" when the payment failed
+     * @param string|false $raw
+     * @return array|null null on failure (see getLastError())
+     */
+    private function bmoResult($raw)
+    {
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || !isset($data->status)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        $result = array(
+            'reference' => $data->reference ?? '',
+            'status' => (string) $data->status,
+            'reason' => isset($data->reason) ? (string) $data->reason : '',
+        );
+        if ($result['status'] === 'FAILED') {
+            $result['message'] = $this->bmoFailureMessage($result['reason']);
+            $this->lastError = array('message' => $result['message'], 'response' => $data);
+        }
+
+        return $result;
+    }
+
+    /**
      * Operator name from the error code (WAVE_API_ERROR) or label (Wave Sénégal API Error)
      */
     private function operatorName(string $code, string $error): string
     {
         $operators = array(
             'WAVE' => 'Wave', 'MTN' => 'MTN', 'MOOV_BJ' => 'Moov', 'MOOV_CI' => 'Moov', 'MOOV_TG' => 'Moov',
-            'CELTIIS_BJ' => 'Celtiis', 'TOGOCOM' => 'Togocom',
+            'CELTIIS_BJ' => 'Celtiis', 'TOGOCOM' => 'Togocom', 'BMO' => 'B-MO',
         );
         $key = preg_replace('/_(API|COMMUNICATION)_ERROR$|_DISBURSEMENT_ERROR$/', '', $code);
         if (isset($operators[$key])) {
@@ -429,6 +508,79 @@ class FeexpayClass
         $this->setApiError($responseCurlPostPaiementData, $responseCurlPostPaiement);
 
         return null;
+    }
+
+    /**
+     * B-MO payment (Benin), step 1: B-MO sends a confirmation code by SMS to the payer, nothing is debited yet.
+     * Then call confirmPaiementBmo() with the code, or cancelPaiementBmo() if the payer gives up.
+     * First and last name are required for a payer who is not yet a B-MO customer.
+     * @param float $amount between 200 and 2 000 000
+     * @param string $phoneNumber 229 + local number, e.g. "2290166000000"
+     * @return array|null ['reference', 'status' (PENDING, SUCCESSFUL, FAILED), 'reason', 'message' if FAILED],
+     *                    null on failure (see getLastError())
+     */
+    public function paiementBmo(float $amount, string $phoneNumber, string $firstName, string $lastName, string $email = "", string $description = "", string $callback_info = "")
+    {
+        $this->lastError = null;
+
+        if ($amount != floor($amount) || $amount < self::BMO_MIN_AMOUNT || $amount > self::BMO_MAX_AMOUNT) {
+            $this->lastError = array(
+                'message' => "Montant invalide : un paiement B-MO doit être compris entre "
+                    . number_format(self::BMO_MIN_AMOUNT, 0, ',', ' ') . " et " . number_format(self::BMO_MAX_AMOUNT, 0, ',', ' ') . ".",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $post = array(
+            "phoneNumber" => $this->normalizePhoneNumber($phoneNumber),
+            "amount" => (int) $amount,
+            "shop" => $this->id,
+        );
+        $optional = array(
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "description" => mb_substr(trim($description), 0, 40),
+            "callback_info" => $callback_info,
+        );
+        foreach ($optional as $key => $value) {
+            if ($value !== '') {
+                $post[$key] = $value;
+            }
+        }
+
+        return $this->bmoResult($this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo", $post));
+    }
+
+    /**
+     * B-MO payment, step 2: confirms the debit with the code received by SMS.
+     * A wrong or expired code leaves the payment PENDING: the payer can try again (see getLastError()).
+     * @return array|null ['reference', 'status' (SUCCESSFUL, FAILED, PENDING), 'reason', 'message' if FAILED],
+     *                    null on failure (see getLastError())
+     */
+    public function confirmPaiementBmo(string $reference, string $otp)
+    {
+        $this->lastError = null;
+
+        return $this->bmoResult($this->curlPost(
+            $this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo/confirm",
+            array("reference" => $reference, "otp" => trim($otp))
+        ));
+    }
+
+    /**
+     * Cancels a pending B-MO payment (the payer gives up before entering the code)
+     * @return array|null ['reference', 'status', 'reason'], null on failure (see getLastError())
+     */
+    public function cancelPaiementBmo(string $reference)
+    {
+        $this->lastError = null;
+
+        return $this->bmoResult($this->curlPost(
+            $this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo/cancel",
+            array("reference" => $reference)
+        ));
     }
 
     /**
