@@ -29,6 +29,12 @@ class FeexpayClass
     const BMO_MIN_AMOUNT = 200;
     const BMO_MAX_AMOUNT = 2000000;
 
+    /**
+     * Djamo payment amount limits (XOF)
+     */
+    const DJAMO_MIN_AMOUNT = 10;
+    const DJAMO_MAX_AMOUNT = 2000000;
+
     public $id;
     public $token;
     public $callback_url;
@@ -293,6 +299,7 @@ class FeexpayClass
                 '/under maintenance|^Network Unavailable$/i' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
                 '/otp is required/i' => "Le code OTP est requis.",
                 '/first_name and last_name are required/i' => "Le nom et le prénom sont requis pour un premier paiement B-MO.",
+                '/must be a C.te d.Ivoire number/i' => "Numéro de téléphone invalide : un numéro Djamo commence par 225 suivi de 10 chiffres.",
             );
             foreach ($businessMessages as $pattern => $readable) {
                 if (preg_match($pattern, $message)) {
@@ -384,7 +391,7 @@ class FeexpayClass
     {
         $operators = array(
             'WAVE' => 'Wave', 'MTN' => 'MTN', 'MOOV_BJ' => 'Moov', 'MOOV_CI' => 'Moov', 'MOOV_TG' => 'Moov',
-            'CELTIIS_BJ' => 'Celtiis', 'TOGOCOM' => 'Togocom', 'BMO' => 'B-MO',
+            'CELTIIS_BJ' => 'Celtiis', 'TOGOCOM' => 'Togocom', 'BMO' => 'B-MO', 'DJAMO' => 'Djamo',
         );
         $key = preg_replace('/_(API|COMMUNICATION)_ERROR$|_DISBURSEMENT_ERROR$/', '', $code);
         if (isset($operators[$key])) {
@@ -452,6 +459,11 @@ class FeexpayClass
         $operatorCode = isset($details->code) && is_string($details->code) ? $details->code : '';
         if (isset($operatorCodes[$operatorCode])) {
             return $operatorCodes[$operatorCode];
+        }
+
+        // Djamo: { statusCode, message: ["..."], error: "INVALID_REQUEST" }
+        if (isset($details->message) && is_array($details->message) && !empty($details->message)) {
+            return $operator . " : " . implode(', ', array_map('strval', $details->message));
         }
 
         foreach (array('message', 'reason', 'error_description', 'error') as $key) {
@@ -581,6 +593,83 @@ class FeexpayClass
             $this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo/cancel",
             array("reference" => $reference)
         ));
+    }
+
+    /**
+     * Djamo payment (Côte d'Ivoire, Djamo account to Djamo account): returns the Djamo page where the
+     * payer validates the payment in their Djamo app. Redirect the payer to "payment_url".
+     * The payment stays PENDING until validated; without payment within 1 hour it becomes FAILED.
+     * Check the final status with getPaiementStatus() / isPaymentSuccessful() or the webhook.
+     * @param float $amount between 10 and 2 000 000 XOF
+     * @param string $phoneNumber 225 + 10 digits, e.g. "2250700000000"
+     * @param string $return_url page shown after a successful payment (default: callback_url of the constructor)
+     * @param string $cancel_url page shown if the payer cancels (default: error_callback_url of the constructor)
+     * @return array|null ['payment_url', 'reference', 'status' (PENDING)], null on failure (see getLastError())
+     */
+    public function paiementDjamo(float $amount, string $phoneNumber, string $firstName = "", string $lastName = "", string $email = "", string $description = "", string $callback_info = "", string $return_url = "", string $cancel_url = "")
+    {
+        $this->lastError = null;
+
+        if ($amount != floor($amount) || $amount < self::DJAMO_MIN_AMOUNT || $amount > self::DJAMO_MAX_AMOUNT) {
+            $this->lastError = array(
+                'message' => "Montant invalide : un paiement Djamo doit être compris entre "
+                    . number_format(self::DJAMO_MIN_AMOUNT, 0, ',', ' ') . " et " . number_format(self::DJAMO_MAX_AMOUNT, 0, ',', ' ') . ".",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $phone = $this->normalizePhoneNumber($phoneNumber);
+        if (!preg_match('/^225\d{10}$/', $phone)) {
+            $this->lastError = array(
+                'message' => "Numéro de téléphone invalide : un numéro Djamo commence par 225 suivi de 10 chiffres (ex. 2250700000000).",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $post = array(
+            "phoneNumber" => $phone,
+            "amount" => (int) $amount,
+            "shop" => $this->id,
+        );
+        $optional = array(
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "description" => mb_substr(trim($description), 0, 100),
+            "callback_info" => $callback_info,
+            "return_url" => trim($return_url !== '' ? $return_url : (string) $this->callback_url),
+            "cancel_url" => trim($cancel_url !== '' ? $cancel_url : (string) $this->error_callback_url),
+        );
+        foreach ($optional as $key => $value) {
+            if ($value !== '') {
+                $post[$key] = $value;
+            }
+        }
+
+        $raw = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/djamo_ci", $post);
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || empty($data->payment_url)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        // Only https payment pages: the merchant redirects its customer to this URL
+        if (strpos((string) $data->payment_url, 'https://') !== 0) {
+            $this->lastError = array('message' => 'URL de paiement refusée (https attendu)', 'response' => $data);
+            return null;
+        }
+
+        return array(
+            'payment_url' => (string) $data->payment_url,
+            'reference' => $data->reference ?? '',
+            'status' => isset($data->status) ? (string) $data->status : 'PENDING',
+        );
     }
 
     /**

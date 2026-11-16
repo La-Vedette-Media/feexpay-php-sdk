@@ -7,6 +7,8 @@ Updates should follow the [Keep a CHANGELOG](https://keepachangelog.com/) princi
 ## Unreleased
 
 ### Added
+- Djamo payment (Côte d'Ivoire): `paiementDjamo()` returns the Djamo page (`payment_url`) where the payer validates the payment in their Djamo app; `return_url` / `cancel_url` default to the constructor's `callback_url` / `error_callback_url`
+- Readable Djamo errors (e.g. `Djamo : onCompletedRedirectionUrl must be a URL address`)
 - B-MO payment (Benin): `paiementBmo()` starts the payment (confirmation code sent by SMS), `confirmPaiementBmo()` confirms it with the code, `cancelPaiementBmo()` cancels it
 - Readable B-MO failure reasons (e.g. `INSUFFICIENT BALANCE` → "Solde B-MO insuffisant pour effectuer ce paiement.")
 - `isPaymentSuccessful($reference, $expectedAmount)`: server-side check that a payment is successful, covers the expected amount and belongs to the shop

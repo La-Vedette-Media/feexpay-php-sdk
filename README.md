@@ -150,7 +150,32 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    ?>
    ```
 
-7. Use the card payment method (VISA, MASTERCARD):
+7. Use the Djamo payment method (Côte d'Ivoire, Djamo account to Djamo account). The API returns a Djamo
+   page: redirect the payer to it, they validate the payment in their Djamo app, then Djamo sends them back
+   to `return_url` (or `cancel_url` if they cancel). Without payment within 1 hour, the payment becomes `FAILED`.
+
+   ```php
+   <?php
+   // paiementDjamo(amount, phoneNumber, firstName = "", lastName = "", email = "", description = "",
+   //               callback_info = "", return_url = "", cancel_url = "")
+   // amount: between 10 and 2 000 000 XOF. phoneNumber: 225 + 10 digits.
+   // return_url / cancel_url default to the callback_url / error_callback_url given to the constructor.
+   $djamo = $skeleton->paiementDjamo(1000, "2250700000000", "Jon", "Doe", "jondoe@gmail.com", "Order 123");
+
+   if ($djamo === null) {
+       echo $skeleton->getLastError()["message"];
+   } else {
+       // Keep $djamo["reference"] to check the payment later
+       header("Location: " . $djamo["payment_url"]);
+       exit();
+   }
+   ?>
+   ```
+
+   On `return_url`, always confirm the payment server-side before delivering:
+   `$skeleton->isPaymentSuccessful($reference, 1000)`.
+
+8. Use the card payment method (VISA, MASTERCARD):
 
    ```php
    <?php
@@ -166,7 +191,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    ?>
    ```
 
-8. You can also integrate a payment button in your PHP page:
+9. You can also integrate a payment button in your PHP page:
 
    ```php
    <?php
