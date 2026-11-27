@@ -95,8 +95,10 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
 
    ```php
    <?php
-   if ($skeleton->isPaymentSuccessful($reference, $orderTotal)) {
-       // successful, amount >= $orderTotal and paid to this shop
+   // Third argument: currency of the order. Amounts are never converted: a 5 000 NGN payment
+   // (Nigeria) does not pay a 5 000 XOF order. Without it, only XOF / XAF payments are accepted.
+   if ($skeleton->isPaymentSuccessful($reference, $orderTotal, "XOF")) {
+       // successful, amount >= $orderTotal, in XOF and paid to this shop
    } else {
        echo $skeleton->getLastError()["message"];
    }
@@ -120,7 +122,105 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    ?>
    ```
 
-6. Use the card payment method (VISA, MASTERCARD):
+6. Use the B-MO payment method (Benin, `LIVE` mode only). The payment is done in two steps:
+   B-MO sends a confirmation code by SMS to the payer, then you confirm it with this code.
+   Nothing is debited before the confirmation.
+
+   ```php
+   <?php
+   // paiementBmo(amount, phoneNumber, firstName, lastName, email = "", description = "", callback_info = "")
+   // amount: between 200 and 2 000 000. First and last name are required for a payer who is not yet a B-MO customer
+   $bmo = $skeleton->paiementBmo(1000, "2290166000000", "Jon", "Doe", "jondoe@gmail.com", "Order 123");
+
+   if ($bmo === null || $bmo["status"] === "FAILED") {
+       echo $skeleton->getLastError()["message"]; // e.g. "Solde B-MO insuffisant pour effectuer ce paiement."
+   } elseif ($bmo["status"] === "PENDING") {
+       // Ask the payer for the code received by SMS, then:
+       $result = $skeleton->confirmPaiementBmo($bmo["reference"], $otp);
+
+       if ($result !== null && $result["status"] === "SUCCESSFUL") {
+           // paid
+       } elseif ($result === null) {
+           // e.g. wrong or expired code: the payment stays PENDING, the payer can try again
+           echo $skeleton->getLastError()["message"];
+       } else {
+           echo $result["message"] ?? "";  // FAILED: readable reason ("reason" holds the raw B-MO reason)
+       }
+
+       // If the payer gives up: $skeleton->cancelPaiementBmo($bmo["reference"]);
+   }
+   ?>
+   ```
+
+7. Use the Djamo payment method (Côte d'Ivoire, Djamo account to Djamo account). The API returns a Djamo
+   page: redirect the payer to it, they validate the payment in their Djamo app, then Djamo sends them back
+   to `return_url` (or `cancel_url` if they cancel). Without payment within 1 hour, the payment becomes `FAILED`.
+
+   ```php
+   <?php
+   // paiementDjamo(amount, phoneNumber, firstName = "", lastName = "", email = "", description = "",
+   //               callback_info = "", return_url = "", cancel_url = "")
+   // amount: between 10 and 2 000 000 XOF. phoneNumber: 225 + 10 digits.
+   // return_url / cancel_url default to the callback_url / error_callback_url given to the constructor.
+   $djamo = $skeleton->paiementDjamo(1000, "2250700000000", "Jon", "Doe", "jondoe@gmail.com", "Order 123");
+
+   if ($djamo === null) {
+       echo $skeleton->getLastError()["message"];
+   } else {
+       // Keep $djamo["reference"] to check the payment later
+       header("Location: " . $djamo["payment_url"]);
+       exit();
+   }
+   ?>
+   ```
+
+   On `return_url`, always confirm the payment server-side before delivering:
+   `$skeleton->isPaymentSuccessful($reference, 1000)`.
+
+8. Nigeria (amounts in NGN). Two methods:
+
+   - **Bank transfer**: the API creates a temporary bank account. Show it to the payer, who transfers
+     exactly `amount_expected` to it from their bank before `expires_at` (about 30 minutes).
+   - **Pay with Bank**: the payer chooses their bank (e.g. Opay, PalmPay) and authorizes the payment on
+     its page, then comes back to `redirect_url`.
+
+   ```php
+   <?php
+   // paiementBankTransferNg(amount, firstName = "", lastName = "", email = "", description = "", callback_info = "")
+   // amount: between 100 and 10 000 000 NGN.
+   $transfer = $skeleton->paiementBankTransferNg(5000, "Jon", "Doe", "jondoe@gmail.com", "Order 123");
+
+   if ($transfer === null) {
+       echo $skeleton->getLastError()["message"];
+   } else {
+       // Keep $transfer["reference"] to check the payment later
+       $account = $transfer["bank_account"];
+       echo "Transfer " . $transfer["amount_expected"] . " NGN to " . $account["account_number"]
+           . " (" . $account["bank_name"] . ", " . $account["account_name"] . ")";
+   }
+
+   // getPayWithBankNgBanks(): list of ['code' => ..., 'name' => ...] to let the payer choose their bank
+   $banks = $skeleton->getPayWithBankNgBanks();
+
+   // paiementPayWithBankNg(amount, bankCode, firstName = "", lastName = "", email = "", description = "",
+   //                       callback_info = "", redirect_url = "")
+   // amount: between 200 and 10 000 000 NGN. redirect_url defaults to the constructor's callback_url.
+   $payWithBank = $skeleton->paiementPayWithBankNg(5000, $banks[0]["code"], "Jon", "Doe", "jondoe@gmail.com", "Order 123");
+
+   if ($payWithBank === null) {
+       echo $skeleton->getLastError()["message"];
+   } else {
+       header("Location: " . $payWithBank["payment_url"]);
+       exit();
+   }
+   ?>
+   ```
+
+   In both cases the payment stays `PENDING` until it is received: confirm it server-side (webhook or
+   `$skeleton->isPaymentSuccessful($reference, 5000, "NGN")`) before delivering. Nigeria must be enabled on your
+   FeexPay account.
+
+9. Use the card payment method (VISA, MASTERCARD):
 
    ```php
    <?php
@@ -136,7 +236,7 @@ This guide explains how to use the Feexpay PHP SDK to easily integrate mobile an
    ?>
    ```
 
-7. You can also integrate a payment button in your PHP page:
+10. You can also integrate a payment button in your PHP page:
 
    ```php
    <?php

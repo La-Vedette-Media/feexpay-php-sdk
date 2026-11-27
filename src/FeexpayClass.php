@@ -23,6 +23,25 @@ class FeexpayClass
     const CONNECT_TIMEOUT = 10;
     const READ_TIMEOUT = 30;
 
+    /**
+     * B-MO (Benin) amount limits accepted by the API
+     */
+    const BMO_MIN_AMOUNT = 200;
+    const BMO_MAX_AMOUNT = 2000000;
+
+    /**
+     * Djamo payment amount limits (XOF)
+     */
+    const DJAMO_MIN_AMOUNT = 10;
+    const DJAMO_MAX_AMOUNT = 2000000;
+
+    /**
+     * Nigeria (NGN) amount limits: bank transfer from 100, Pay with Bank from 200
+     */
+    const NG_MIN_AMOUNT = 100;
+    const NG_PAY_WITH_BANK_MIN_AMOUNT = 200;
+    const NG_MAX_AMOUNT = 10000000;
+
     public $id;
     public $token;
     public $callback_url;
@@ -182,21 +201,289 @@ class FeexpayClass
      */
     private function setApiError($data, string $raw)
     {
-        $message = "Réponse inattendue de l'API";
-        if (is_object($data)) {
-            foreach (array('message', 'error', 'errors', 'status') as $key) {
-                if (!empty($data->$key)) {
-                    $value = $data->$key;
-                    $message = is_string($value) ? $value : json_encode($value, JSON_UNESCAPED_UNICODE);
-                    break;
+        $this->lastError = array(
+            'message' => $this->interpretApiError($data),
+            'response' => $data !== null ? $data : $raw,
+        );
+    }
+
+    /**
+     * True when the decoded response is an API error ({ statusCode: 4xx/5xx, ... })
+     * @param mixed $data decoded API response
+     */
+    private function isApiError($data): bool
+    {
+        return is_object($data) && isset($data->statusCode) && is_int($data->statusCode) && $data->statusCode >= 400;
+    }
+
+    /**
+     * Turn an API error response into a readable message for the payer.
+     * Formats returned by the API:
+     *  - business error   : { statusCode, message, code? }
+     *  - validation error : { statusCode: 400, message: "Validation failed", errors: [{ property, constraints }] }
+     *  - operator error   : { message: "Wave API Error", code: "WAVE_API_ERROR", details: <operator response> }
+     *                       or { error: "Wave Sénégal API Error", message: <operator response> }
+     *  - 5xx error        : { statusCode, message: "Internal Server Error" } (details hidden by the API)
+     * @param mixed $data decoded API response
+     */
+    private function interpretApiError($data): string
+    {
+        $fallback = "La demande de paiement a échoué. Veuillez réessayer.";
+        if (!is_object($data)) {
+            return "Réponse inattendue de l'API";
+        }
+
+        $statusCode = $data->statusCode ?? null;
+        if (is_int($statusCode) && $statusCode >= 500) {
+            return "Service momentanément indisponible. Veuillez réessayer plus tard.";
+        }
+
+        $code = isset($data->code) && is_string($data->code) ? $data->code : '';
+
+        if (isset($data->errors) && is_array($data->errors)) {
+            $fieldMessages = array(
+                'phoneNumber' => "Numéro de téléphone invalide.",
+                'amount' => "Montant invalide : il doit être compris entre 10 et 2 000 000.",
+                'email' => "Adresse email invalide.",
+                'reseau' => "Ce réseau n'est pas pris en charge.",
+                'shop' => "Identifiant de boutique manquant.",
+                'description' => "La description ne doit pas dépasser 40 caractères.",
+                'callback_info' => "Le champ callback_info est invalide.",
+                'first_name' => "Nom invalide.",
+                'otp' => "Code OTP invalide.",
+                'bank_code' => "Banque invalide.",
+                'redirect_url' => "L'URL de retour est invalide.",
+            );
+            $messages = array();
+            foreach ($data->errors as $error) {
+                $property = is_object($error) && isset($error->property) ? $error->property : '';
+                $amountLimit = $property === 'amount' ? $this->amountLimitMessage($error) : null;
+                if ($amountLimit !== null) {
+                    $messages[] = $amountLimit;
+                } elseif (isset($fieldMessages[$property])) {
+                    $messages[] = $fieldMessages[$property];
+                } elseif (is_object($error) && !empty($error->constraints) && is_array($error->constraints)) {
+                    $messages[] = (string) $error->constraints[0];
                 }
+            }
+            if (!empty($messages)) {
+                return implode(' ', array_unique($messages));
             }
         }
 
-        $this->lastError = array(
-            'message' => $message,
-            'response' => $data !== null ? $data : $raw,
+        $error = isset($data->error) && is_string($data->error) ? $data->error : '';
+        if (preg_match('/_(API|DISBURSEMENT)_ERROR$/', $code) || preg_match('/API Error$/', $error)) {
+            $details = $data->details ?? (isset($data->message) && !is_string($data->message) ? $data->message : null);
+            return $this->interpretOperatorError($this->operatorName($code, $error), $details);
+        }
+        if (preg_match('/_COMMUNICATION_ERROR$/', $code)) {
+            return $this->operatorName($code, $error) . " est momentanément injoignable. Veuillez réessayer plus tard.";
+        }
+
+        $codeMessages = array(
+            'UNAUTHORIZED' => "Clé API invalide.",
+            'API_KEY_BLOCKED' => "La clé API est bloquée.",
+            'ACCESS_DENIED' => "Ce moyen de paiement n'est pas activé pour ce marchand.",
+            'NETWORK_UNAVAILABLE' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
+            'NOT_FOUND' => "Transaction introuvable.",
+            'INVALID_OTP' => "Code de confirmation invalide.",
+            'INVALID_CONFIRMATION_CODE' => "Code de confirmation invalide ou expiré.",
+            'ALREADY_FINALIZED' => "Cette transaction a déjà été traitée.",
         );
+        if (isset($codeMessages[$code])) {
+            return $codeMessages[$code];
+        }
+
+        $message = $data->message ?? null;
+        if (is_array($message)) {
+            $message = implode(', ', $message);
+        }
+        if (is_string($message) && $message !== '') {
+            $businessMessages = array(
+                '/^Merchant or Shop not found$/i' => "Boutique introuvable : vérifiez l'identifiant de la boutique et la clé API.",
+                '/^Shop is disabled$/i' => "Cette boutique est désactivée.",
+                '/Wave aggregated merchant not configured/i' => "Le paiement Wave n'est pas encore activé pour ce marchand.",
+                '/channel not configured/i' => "Ce réseau n'est pas disponible pour le moment.",
+                '/not available yet/i' => "Ce réseau n'est pas encore disponible.",
+                '/under maintenance|^Network Unavailable$/i' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
+                '/otp is required/i' => "Le code OTP est requis.",
+                '/first_name and last_name are required/i' => "Le nom et le prénom sont requis pour un premier paiement B-MO.",
+                '/^bank_code is required$/i' => "Veuillez choisir la banque du payeur.",
+                '/must be a C.te d.Ivoire number/i' => "Numéro de téléphone invalide : un numéro Djamo commence par 225 suivi de 10 chiffres.",
+            );
+            foreach ($businessMessages as $pattern => $readable) {
+                if (preg_match($pattern, $message)) {
+                    return $readable;
+                }
+            }
+            if ($message !== 'Validation failed' && $message !== 'Bad Request') {
+                return $message;
+            }
+        }
+
+        if (isset($data->status) && is_string($data->status) && $data->status !== '') {
+            return $data->status;
+        }
+
+        return $fallback;
+    }
+
+    /**
+     * Amount limit from a validation error ("amount must not be less than 200"): the limits
+     * depend on the network (e.g. B-MO: 200 minimum)
+     * @param mixed $error
+     */
+    private function amountLimitMessage($error)
+    {
+        $constraints = is_object($error) && isset($error->constraints) && is_array($error->constraints) ? $error->constraints : array();
+        foreach ($constraints as $constraint) {
+            if (preg_match('/less than (\d+)/', (string) $constraint, $match)) {
+                return "Montant invalide : le minimum est de " . number_format((int) $match[1], 0, ',', ' ') . ".";
+            }
+            if (preg_match('/greater than (\d+)/', (string) $constraint, $match)) {
+                return "Montant invalide : le maximum est de " . number_format((int) $match[1], 0, ',', ' ') . ".";
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Readable message from the failure reason returned by B-MO ("INSUFFICIENT BALANCE"...)
+     */
+    private function bmoFailureMessage(string $reason): string
+    {
+        if ($reason === '') {
+            return "Le paiement a été refusé par B-MO.";
+        }
+        $reasons = array(
+            'INSUFFICIENT BALANCE' => "Solde B-MO insuffisant pour effectuer ce paiement.",
+        );
+        $key = preg_replace('/[_\s]+/', ' ', strtoupper(trim($reason)));
+
+        return $reasons[$key] ?? "Le paiement a été refusé par B-MO : " . $reason;
+    }
+
+    /**
+     * Result of a B-MO request: the API response as an array, with a readable "message" when the payment failed
+     * @param string|false $raw
+     * @return array|null null on failure (see getLastError())
+     */
+    private function bmoResult($raw)
+    {
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || !isset($data->status)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        $result = array(
+            'reference' => $data->reference ?? '',
+            'status' => (string) $data->status,
+            'reason' => isset($data->reason) ? (string) $data->reason : '',
+        );
+        if ($result['status'] === 'FAILED') {
+            $result['message'] = $this->bmoFailureMessage($result['reason']);
+            $this->lastError = array('message' => $result['message'], 'response' => $data);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Operator name from the error code (WAVE_API_ERROR) or label (Wave Sénégal API Error)
+     */
+    private function operatorName(string $code, string $error): string
+    {
+        $operators = array(
+            'WAVE' => 'Wave', 'MTN' => 'MTN', 'MOOV_BJ' => 'Moov', 'MOOV_CI' => 'Moov', 'MOOV_TG' => 'Moov',
+            'CELTIIS_BJ' => 'Celtiis', 'TOGOCOM' => 'Togocom', 'BMO' => 'B-MO', 'DJAMO' => 'Djamo',
+        );
+        $key = preg_replace('/_(API|COMMUNICATION)_ERROR$|_DISBURSEMENT_ERROR$/', '', $code);
+        if (isset($operators[$key])) {
+            return $operators[$key];
+        }
+        if (preg_match('/^(Wave|Orange|Free)/', $error, $match)) {
+            return $match[1];
+        }
+
+        return "l'opérateur";
+    }
+
+    /**
+     * Readable message from the operator response forwarded by the API (Wave, MTN...)
+     * @param mixed $details
+     */
+    private function interpretOperatorError(string $operator, $details): string
+    {
+        $fallback = "Le paiement a été refusé par " . $operator . ". Veuillez réessayer.";
+        if (is_string($details) && $details !== '') {
+            return $operator . " : " . $details;
+        }
+        if (!is_object($details)) {
+            return $fallback;
+        }
+
+        $validation = isset($details->details) && is_array($details->details) ? $details->details : array();
+        foreach ($validation as $item) {
+            $loc = is_object($item) && isset($item->loc) && is_array($item->loc) ? $item->loc : array();
+            if (preg_grep('/mobile|phone|msisdn/i', array_map('strval', $loc))) {
+                $phone = preg_match('/\+?\d{6,}/', (string) ($item->msg ?? ''), $match) ? " (" . $match[0] . ")" : "";
+                return "Numéro de téléphone invalide pour " . $operator . $phone . ". Vérifiez le numéro saisi.";
+            }
+            if (in_array('amount', $loc, true)) {
+                return "Montant refusé par " . $operator . ".";
+            }
+        }
+
+        $operatorCodes = array(
+            // Wave
+            'insufficient-funds' => "Solde Wave insuffisant.",
+            'blocked-account' => "Ce compte Wave est bloqué.",
+            'recipient-account-blocked' => "Ce compte Wave est bloqué.",
+            'recipient-account-inactive' => "Ce compte Wave n'est pas actif.",
+            'recipient-limit-exceeded' => "Le plafond de ce compte Wave est atteint.",
+            'recipient-minor' => "Ce compte Wave ne peut pas effectuer ce paiement.",
+            'country-mismatch' => "Ce numéro n'est pas un compte Wave de ce pays.",
+            'currency-mismatch' => "Cette devise n'est pas acceptée par Wave.",
+            'invalid-aggregated-merchant-id' => "Le paiement Wave n'est pas activé pour ce marchand.",
+            'aggregated-merchant-required' => "Le paiement Wave n'est pas activé pour ce marchand.",
+            'too-many-requests' => "Trop de tentatives. Veuillez patienter quelques instants.",
+            'service-unavailable' => "Wave est momentanément indisponible. Veuillez réessayer plus tard.",
+            'internal-server-error' => "Wave est momentanément indisponible. Veuillez réessayer plus tard.",
+            // MTN MoMo
+            'PAYER_NOT_FOUND' => "Ce numéro n'a pas de compte MTN Mobile Money.",
+            'NOT_ENOUGH_FUNDS' => "Solde MTN Mobile Money insuffisant.",
+            'PAYER_LIMIT_REACHED' => "Le plafond de ce compte MTN Mobile Money est atteint.",
+            'NOT_ALLOWED' => "Ce compte MTN Mobile Money n'est pas autorisé à payer.",
+            'NOT_ALLOWED_TARGET_ENVIRONMENT' => "Ce compte MTN Mobile Money n'est pas autorisé à payer.",
+            'INVALID_CURRENCY' => "Cette devise n'est pas acceptée par MTN.",
+            'SERVICE_UNAVAILABLE' => "MTN est momentanément indisponible. Veuillez réessayer plus tard.",
+            'INTERNAL_PROCESSING_ERROR' => "MTN est momentanément indisponible. Veuillez réessayer plus tard.",
+            'COULD_NOT_PERFORM_TRANSACTION' => "MTN n'a pas pu effectuer la transaction. Veuillez réessayer.",
+        );
+        $operatorCode = isset($details->code) && is_string($details->code) ? $details->code : '';
+        if (isset($operatorCodes[$operatorCode])) {
+            return $operatorCodes[$operatorCode];
+        }
+
+        // Djamo: { statusCode, message: ["..."], error: "INVALID_REQUEST" }
+        if (isset($details->message) && is_array($details->message) && !empty($details->message)) {
+            return $operator . " : " . implode(', ', array_map('strval', $details->message));
+        }
+
+        foreach (array('message', 'reason', 'error_description', 'error') as $key) {
+            if (isset($details->$key) && is_string($details->$key) && $details->$key !== ''
+                && strcasecmp($details->$key, 'Request invalid') !== 0) {
+                return $operator . " : " . $details->$key;
+            }
+        }
+
+        return $fallback;
     }
 
     /**
@@ -246,6 +533,314 @@ class FeexpayClass
     }
 
     /**
+     * B-MO payment (Benin), step 1: B-MO sends a confirmation code by SMS to the payer, nothing is debited yet.
+     * Then call confirmPaiementBmo() with the code, or cancelPaiementBmo() if the payer gives up.
+     * First and last name are required for a payer who is not yet a B-MO customer.
+     * @param float $amount between 200 and 2 000 000
+     * @param string $phoneNumber 229 + local number, e.g. "2290166000000"
+     * @return array|null ['reference', 'status' (PENDING, SUCCESSFUL, FAILED), 'reason', 'message' if FAILED],
+     *                    null on failure (see getLastError())
+     */
+    public function paiementBmo(float $amount, string $phoneNumber, string $firstName, string $lastName, string $email = "", string $description = "", string $callback_info = "")
+    {
+        $this->lastError = null;
+
+        if ($amount != floor($amount) || $amount < self::BMO_MIN_AMOUNT || $amount > self::BMO_MAX_AMOUNT) {
+            $this->lastError = array(
+                'message' => "Montant invalide : un paiement B-MO doit être compris entre "
+                    . number_format(self::BMO_MIN_AMOUNT, 0, ',', ' ') . " et " . number_format(self::BMO_MAX_AMOUNT, 0, ',', ' ') . ".",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $post = array(
+            "phoneNumber" => $this->normalizePhoneNumber($phoneNumber),
+            "amount" => (int) $amount,
+            "shop" => $this->id,
+        );
+        $optional = array(
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "description" => mb_substr(trim($description), 0, 40),
+            "callback_info" => $callback_info,
+        );
+        foreach ($optional as $key => $value) {
+            if ($value !== '') {
+                $post[$key] = $value;
+            }
+        }
+
+        return $this->bmoResult($this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo", $post));
+    }
+
+    /**
+     * B-MO payment, step 2: confirms the debit with the code received by SMS.
+     * A wrong or expired code leaves the payment PENDING: the payer can try again (see getLastError()).
+     * @return array|null ['reference', 'status' (SUCCESSFUL, FAILED, PENDING), 'reason', 'message' if FAILED],
+     *                    null on failure (see getLastError())
+     */
+    public function confirmPaiementBmo(string $reference, string $otp)
+    {
+        $this->lastError = null;
+
+        return $this->bmoResult($this->curlPost(
+            $this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo/confirm",
+            array("reference" => $reference, "otp" => trim($otp))
+        ));
+    }
+
+    /**
+     * Cancels a pending B-MO payment (the payer gives up before entering the code)
+     * @return array|null ['reference', 'status', 'reason'], null on failure (see getLastError())
+     */
+    public function cancelPaiementBmo(string $reference)
+    {
+        $this->lastError = null;
+
+        return $this->bmoResult($this->curlPost(
+            $this->apiBaseUrl() . "/api/transactions/public/requesttopay/bmo/cancel",
+            array("reference" => $reference)
+        ));
+    }
+
+    /**
+     * Djamo payment (Côte d'Ivoire, Djamo account to Djamo account): returns the Djamo page where the
+     * payer validates the payment in their Djamo app. Redirect the payer to "payment_url".
+     * The payment stays PENDING until validated; without payment within 1 hour it becomes FAILED.
+     * Check the final status with getPaiementStatus() / isPaymentSuccessful() or the webhook.
+     * @param float $amount between 10 and 2 000 000 XOF
+     * @param string $phoneNumber 225 + 10 digits, e.g. "2250700000000"
+     * @param string $return_url page shown after a successful payment (default: callback_url of the constructor)
+     * @param string $cancel_url page shown if the payer cancels (default: error_callback_url of the constructor)
+     * @return array|null ['payment_url', 'reference', 'status' (PENDING)], null on failure (see getLastError())
+     */
+    public function paiementDjamo(float $amount, string $phoneNumber, string $firstName = "", string $lastName = "", string $email = "", string $description = "", string $callback_info = "", string $return_url = "", string $cancel_url = "")
+    {
+        $this->lastError = null;
+
+        if ($amount != floor($amount) || $amount < self::DJAMO_MIN_AMOUNT || $amount > self::DJAMO_MAX_AMOUNT) {
+            $this->lastError = array(
+                'message' => "Montant invalide : un paiement Djamo doit être compris entre "
+                    . number_format(self::DJAMO_MIN_AMOUNT, 0, ',', ' ') . " et " . number_format(self::DJAMO_MAX_AMOUNT, 0, ',', ' ') . ".",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $phone = $this->normalizePhoneNumber($phoneNumber);
+        if (!preg_match('/^225\d{10}$/', $phone)) {
+            $this->lastError = array(
+                'message' => "Numéro de téléphone invalide : un numéro Djamo commence par 225 suivi de 10 chiffres (ex. 2250700000000).",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $post = array(
+            "phoneNumber" => $phone,
+            "amount" => (int) $amount,
+            "shop" => $this->id,
+        );
+        $optional = array(
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "description" => mb_substr(trim($description), 0, 100),
+            "callback_info" => $callback_info,
+            "return_url" => trim($return_url !== '' ? $return_url : (string) $this->callback_url),
+            "cancel_url" => trim($cancel_url !== '' ? $cancel_url : (string) $this->error_callback_url),
+        );
+        foreach ($optional as $key => $value) {
+            if ($value !== '') {
+                $post[$key] = $value;
+            }
+        }
+
+        $raw = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/djamo_ci", $post);
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || empty($data->payment_url)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        // Only https payment pages: the merchant redirects its customer to this URL
+        if (strpos((string) $data->payment_url, 'https://') !== 0) {
+            $this->lastError = array('message' => 'URL de paiement refusée (https attendu)', 'response' => $data);
+            return null;
+        }
+
+        return array(
+            'payment_url' => (string) $data->payment_url,
+            'reference' => $data->reference ?? '',
+            'status' => isset($data->status) ? (string) $data->status : 'PENDING',
+        );
+    }
+
+    /**
+     * Fields shared by the two Nigeria payment methods (amount in NGN)
+     * @return array|null request body, null if the amount is invalid (see getLastError())
+     */
+    private function nigeriaPayload(float $amount, int $minAmount, string $label, string $firstName, string $lastName, string $email, string $description, string $callback_info)
+    {
+        if ($amount != floor($amount) || $amount < $minAmount || $amount > self::NG_MAX_AMOUNT) {
+            $this->lastError = array(
+                'message' => "Montant invalide : un paiement " . $label . " doit être compris entre "
+                    . number_format($minAmount, 0, ',', ' ') . " et " . number_format(self::NG_MAX_AMOUNT, 0, ',', ' ') . " NGN.",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $post = array(
+            "amount" => (int) $amount,
+            "shop" => $this->id,
+        );
+        $optional = array(
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "description" => mb_substr(trim($description), 0, 40),
+            "callback_info" => $callback_info,
+        );
+        foreach ($optional as $key => $value) {
+            if ($value !== '') {
+                $post[$key] = $value;
+            }
+        }
+
+        return $post;
+    }
+
+    /**
+     * Nigeria bank transfer (NGN): the API creates a temporary bank account. Show it to the payer, who
+     * transfers exactly "amount_expected" to it from their bank before "bank_account.expires_at" (about 30 min).
+     * The payment stays PENDING until the transfer is received.
+     * Check the final status with getPaiementStatus() / isPaymentSuccessful() or the webhook.
+     * @param float $amount between 100 and 10 000 000 NGN
+     * @return array|null ['reference', 'status' (PENDING), 'amount_expected',
+     *                     'bank_account' => ['account_name', 'account_number', 'bank_name', 'bank_code', 'expires_at']],
+     *                    null on failure (see getLastError())
+     */
+    public function paiementBankTransferNg(float $amount, string $firstName = "", string $lastName = "", string $email = "", string $description = "", string $callback_info = "")
+    {
+        $this->lastError = null;
+
+        $post = $this->nigeriaPayload($amount, self::NG_MIN_AMOUNT, "par virement bancaire", $firstName, $lastName, $email, $description, $callback_info);
+        if ($post === null) {
+            return null;
+        }
+
+        $raw = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/bank_transfer_ng", $post);
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || empty($data->bank_account->account_number)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        $account = $data->bank_account;
+        return array(
+            'reference' => $data->reference ?? '',
+            'status' => isset($data->status) ? (string) $data->status : 'PENDING',
+            'amount_expected' => isset($data->amount_expected) ? $data->amount_expected : null,
+            'bank_account' => array(
+                'account_name' => (string) ($account->account_name ?? ''),
+                'account_number' => (string) $account->account_number,
+                'bank_name' => (string) ($account->bank_name ?? ''),
+                'bank_code' => (string) ($account->bank_code ?? ''),
+                'expires_at' => (string) ($account->expires_at ?? ''),
+            ),
+        );
+    }
+
+    /**
+     * Banks available for Pay with Bank (Nigeria), to let the payer choose theirs
+     * @return array|null list of ['code', 'name'], null on failure (see getLastError())
+     */
+    public function getPayWithBankNgBanks()
+    {
+        $this->lastError = null;
+
+        $raw = $this->curlGet($this->apiBaseUrl() . "/api/transactions/public/requesttopay/pay_with_bank_ng/banks");
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || !isset($data->banks) || !is_array($data->banks)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        $banks = array();
+        foreach ($data->banks as $bank) {
+            $banks[] = array('code' => (string) ($bank->code ?? ''), 'name' => (string) ($bank->name ?? ''));
+        }
+        return $banks;
+    }
+
+    /**
+     * Nigeria Pay with Bank (NGN): returns the page of the payer's bank (e.g. Opay, PalmPay) where they
+     * authorize the payment. Redirect the payer to "payment_url"; they come back to $redirect_url.
+     * Check the final status with getPaiementStatus() / isPaymentSuccessful() or the webhook.
+     * @param float $amount between 200 and 10 000 000 NGN
+     * @param string $bankCode code returned by getPayWithBankNgBanks()
+     * @param string $redirect_url page shown after the payment (default: callback_url of the constructor)
+     * @return array|null ['payment_url', 'reference', 'status' (PENDING)], null on failure (see getLastError())
+     */
+    public function paiementPayWithBankNg(float $amount, string $bankCode, string $firstName = "", string $lastName = "", string $email = "", string $description = "", string $callback_info = "", string $redirect_url = "")
+    {
+        $this->lastError = null;
+
+        if (trim($bankCode) === '') {
+            $this->lastError = array('message' => "Veuillez choisir la banque du payeur (voir getPayWithBankNgBanks()).", 'response' => null);
+            return null;
+        }
+
+        $post = $this->nigeriaPayload($amount, self::NG_PAY_WITH_BANK_MIN_AMOUNT, "Pay with Bank", $firstName, $lastName, $email, $description, $callback_info);
+        if ($post === null) {
+            return null;
+        }
+        $post["bank_code"] = trim($bankCode);
+        $redirect = trim($redirect_url !== '' ? $redirect_url : (string) $this->callback_url);
+        if ($redirect !== '') {
+            $post["redirect_url"] = $redirect;
+        }
+
+        $raw = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/pay_with_bank_ng", $post);
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || empty($data->payment_url)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        // Only https payment pages: the merchant redirects its customer to this URL
+        if (strpos((string) $data->payment_url, 'https://') !== 0) {
+            $this->lastError = array('message' => 'URL de paiement refusée (https attendu)', 'response' => $data);
+            return null;
+        }
+
+        return array(
+            'payment_url' => (string) $data->payment_url,
+            'reference' => $data->reference ?? '',
+            'status' => isset($data->status) ? (string) $data->status : 'PENDING',
+        );
+    }
+
+    /**
      * Mobile money payment with a redirection page (Wave, Orange...)
      * @return array|false ['payment_url' => string, 'reference' => string, 'order_id' => string], false on failure (see getLastError())
      */
@@ -265,6 +860,7 @@ class FeexpayClass
         $responseCurlPostPaiementData = json_decode((string) $responseCurlPostPaiement);
 
         if (!is_object($responseCurlPostPaiementData)
+            || $this->isApiError($responseCurlPostPaiementData)
             || (isset($responseCurlPostPaiementData->status) && $responseCurlPostPaiementData->status == "FAILED")) {
             $this->setApiError($responseCurlPostPaiementData, (string) $responseCurlPostPaiement);
             return false;
@@ -385,15 +981,19 @@ class FeexpayClass
             "status" => $statusData->status,
             "reference" => $statusData->reference ?? $paiementRef,
             "shop" => $statusData->shop ?? null,
+            // Payment currency (e.g. "XOF", "NGN"), null with older API versions
+            "currency" => isset($statusData->currency) ? (string) $statusData->currency : null,
         );
     }
 
     /**
      * Server-side check before delivering an order: the payment is successful, covers the
-     * expected amount and belongs to this shop. The amount and the JavaScript callback come
-     * from the customer's browser and must never be trusted on their own.
+     * expected amount, is in the expected currency and belongs to this shop. The amount and the
+     * JavaScript callback come from the customer's browser and must never be trusted on their own.
+     * @param string $expectedCurrency currency of the order (e.g. "XOF", "NGN"); if empty, only
+     *                                 XOF / XAF payments are accepted
      */
-    public function isPaymentSuccessful($paiementRef, float $expectedAmount): bool
+    public function isPaymentSuccessful($paiementRef, float $expectedAmount, string $expectedCurrency = ''): bool
     {
         $status = $this->getPaiementStatus($paiementRef);
         if ($status === false) {
@@ -409,6 +1009,17 @@ class FeexpayClass
         if (!is_numeric($status['amount']) || (float) $status['amount'] < floor($expectedAmount)) {
             $this->lastError = array('message' => 'Montant payé inférieur au montant attendu', 'response' => $status);
             return false;
+        }
+
+        // The amount is never converted: 5 000 NGN (Nigeria) does not pay a 5 000 XOF order.
+        // Without $expectedCurrency, only CFA franc payments (XOF / XAF) are accepted.
+        if (!empty($status['currency'])) {
+            $currency = strtoupper(trim($status['currency']));
+            $expected = strtoupper(trim($expectedCurrency));
+            if ($expected !== '' ? $currency !== $expected : !in_array($currency, array('XOF', 'XAF'), true)) {
+                $this->lastError = array('message' => 'Devise du paiement (' . $currency . ') différente de celle attendue' . ($expected !== '' ? ' (' . $expected . ')' : ''), 'response' => $status);
+                return false;
+            }
         }
 
         if (!empty($status['shop']) && $status['shop'] !== $this->id) {
