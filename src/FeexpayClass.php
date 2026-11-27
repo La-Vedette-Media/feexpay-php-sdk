@@ -35,6 +35,13 @@ class FeexpayClass
     const DJAMO_MIN_AMOUNT = 10;
     const DJAMO_MAX_AMOUNT = 2000000;
 
+    /**
+     * Nigeria (NGN) amount limits: bank transfer from 100, Pay with Bank from 200
+     */
+    const NG_MIN_AMOUNT = 100;
+    const NG_PAY_WITH_BANK_MIN_AMOUNT = 200;
+    const NG_MAX_AMOUNT = 10000000;
+
     public $id;
     public $token;
     public $callback_url;
@@ -244,6 +251,8 @@ class FeexpayClass
                 'callback_info' => "Le champ callback_info est invalide.",
                 'first_name' => "Nom invalide.",
                 'otp' => "Code OTP invalide.",
+                'bank_code' => "Banque invalide.",
+                'redirect_url' => "L'URL de retour est invalide.",
             );
             $messages = array();
             foreach ($data->errors as $error) {
@@ -299,6 +308,7 @@ class FeexpayClass
                 '/under maintenance|^Network Unavailable$/i' => "Ce réseau est en maintenance. Veuillez réessayer plus tard.",
                 '/otp is required/i' => "Le code OTP est requis.",
                 '/first_name and last_name are required/i' => "Le nom et le prénom sont requis pour un premier paiement B-MO.",
+                '/^bank_code is required$/i' => "Veuillez choisir la banque du payeur.",
                 '/must be a C.te d.Ivoire number/i' => "Numéro de téléphone invalide : un numéro Djamo commence par 225 suivi de 10 chiffres.",
             );
             foreach ($businessMessages as $pattern => $readable) {
@@ -673,6 +683,164 @@ class FeexpayClass
     }
 
     /**
+     * Fields shared by the two Nigeria payment methods (amount in NGN)
+     * @return array|null request body, null if the amount is invalid (see getLastError())
+     */
+    private function nigeriaPayload(float $amount, int $minAmount, string $label, string $firstName, string $lastName, string $email, string $description, string $callback_info)
+    {
+        if ($amount != floor($amount) || $amount < $minAmount || $amount > self::NG_MAX_AMOUNT) {
+            $this->lastError = array(
+                'message' => "Montant invalide : un paiement " . $label . " doit être compris entre "
+                    . number_format($minAmount, 0, ',', ' ') . " et " . number_format(self::NG_MAX_AMOUNT, 0, ',', ' ') . " NGN.",
+                'response' => null,
+            );
+            return null;
+        }
+
+        $post = array(
+            "amount" => (int) $amount,
+            "shop" => $this->id,
+        );
+        $optional = array(
+            "first_name" => trim($firstName),
+            "last_name" => trim($lastName),
+            "email" => trim($email),
+            "description" => mb_substr(trim($description), 0, 40),
+            "callback_info" => $callback_info,
+        );
+        foreach ($optional as $key => $value) {
+            if ($value !== '') {
+                $post[$key] = $value;
+            }
+        }
+
+        return $post;
+    }
+
+    /**
+     * Nigeria bank transfer (NGN): the API creates a temporary bank account. Show it to the payer, who
+     * transfers exactly "amount_expected" to it from their bank before "bank_account.expires_at" (about 30 min).
+     * The payment stays PENDING until the transfer is received.
+     * Check the final status with getPaiementStatus() / isPaymentSuccessful() or the webhook.
+     * @param float $amount between 100 and 10 000 000 NGN
+     * @return array|null ['reference', 'status' (PENDING), 'amount_expected',
+     *                     'bank_account' => ['account_name', 'account_number', 'bank_name', 'bank_code', 'expires_at']],
+     *                    null on failure (see getLastError())
+     */
+    public function paiementBankTransferNg(float $amount, string $firstName = "", string $lastName = "", string $email = "", string $description = "", string $callback_info = "")
+    {
+        $this->lastError = null;
+
+        $post = $this->nigeriaPayload($amount, self::NG_MIN_AMOUNT, "par virement bancaire", $firstName, $lastName, $email, $description, $callback_info);
+        if ($post === null) {
+            return null;
+        }
+
+        $raw = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/bank_transfer_ng", $post);
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || empty($data->bank_account->account_number)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        $account = $data->bank_account;
+        return array(
+            'reference' => $data->reference ?? '',
+            'status' => isset($data->status) ? (string) $data->status : 'PENDING',
+            'amount_expected' => isset($data->amount_expected) ? $data->amount_expected : null,
+            'bank_account' => array(
+                'account_name' => (string) ($account->account_name ?? ''),
+                'account_number' => (string) $account->account_number,
+                'bank_name' => (string) ($account->bank_name ?? ''),
+                'bank_code' => (string) ($account->bank_code ?? ''),
+                'expires_at' => (string) ($account->expires_at ?? ''),
+            ),
+        );
+    }
+
+    /**
+     * Banks available for Pay with Bank (Nigeria), to let the payer choose theirs
+     * @return array|null list of ['code', 'name'], null on failure (see getLastError())
+     */
+    public function getPayWithBankNgBanks()
+    {
+        $this->lastError = null;
+
+        $raw = $this->curlGet($this->apiBaseUrl() . "/api/transactions/public/requesttopay/pay_with_bank_ng/banks");
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || !isset($data->banks) || !is_array($data->banks)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        $banks = array();
+        foreach ($data->banks as $bank) {
+            $banks[] = array('code' => (string) ($bank->code ?? ''), 'name' => (string) ($bank->name ?? ''));
+        }
+        return $banks;
+    }
+
+    /**
+     * Nigeria Pay with Bank (NGN): returns the page of the payer's bank (e.g. Opay, PalmPay) where they
+     * authorize the payment. Redirect the payer to "payment_url"; they come back to $redirect_url.
+     * Check the final status with getPaiementStatus() / isPaymentSuccessful() or the webhook.
+     * @param float $amount between 200 and 10 000 000 NGN
+     * @param string $bankCode code returned by getPayWithBankNgBanks()
+     * @param string $redirect_url page shown after the payment (default: callback_url of the constructor)
+     * @return array|null ['payment_url', 'reference', 'status' (PENDING)], null on failure (see getLastError())
+     */
+    public function paiementPayWithBankNg(float $amount, string $bankCode, string $firstName = "", string $lastName = "", string $email = "", string $description = "", string $callback_info = "", string $redirect_url = "")
+    {
+        $this->lastError = null;
+
+        if (trim($bankCode) === '') {
+            $this->lastError = array('message' => "Veuillez choisir la banque du payeur (voir getPayWithBankNgBanks()).", 'response' => null);
+            return null;
+        }
+
+        $post = $this->nigeriaPayload($amount, self::NG_PAY_WITH_BANK_MIN_AMOUNT, "Pay with Bank", $firstName, $lastName, $email, $description, $callback_info);
+        if ($post === null) {
+            return null;
+        }
+        $post["bank_code"] = trim($bankCode);
+        $redirect = trim($redirect_url !== '' ? $redirect_url : (string) $this->callback_url);
+        if ($redirect !== '') {
+            $post["redirect_url"] = $redirect;
+        }
+
+        $raw = $this->curlPost($this->apiBaseUrl() . "/api/transactions/public/requesttopay/pay_with_bank_ng", $post);
+        if ($raw === false) {
+            return null;
+        }
+
+        $data = json_decode((string) $raw);
+        if (!is_object($data) || $this->isApiError($data) || empty($data->payment_url)) {
+            $this->setApiError($data, (string) $raw);
+            return null;
+        }
+
+        // Only https payment pages: the merchant redirects its customer to this URL
+        if (strpos((string) $data->payment_url, 'https://') !== 0) {
+            $this->lastError = array('message' => 'URL de paiement refusée (https attendu)', 'response' => $data);
+            return null;
+        }
+
+        return array(
+            'payment_url' => (string) $data->payment_url,
+            'reference' => $data->reference ?? '',
+            'status' => isset($data->status) ? (string) $data->status : 'PENDING',
+        );
+    }
+
+    /**
      * Mobile money payment with a redirection page (Wave, Orange...)
      * @return array|false ['payment_url' => string, 'reference' => string, 'order_id' => string], false on failure (see getLastError())
      */
@@ -813,15 +981,19 @@ class FeexpayClass
             "status" => $statusData->status,
             "reference" => $statusData->reference ?? $paiementRef,
             "shop" => $statusData->shop ?? null,
+            // Payment currency (e.g. "XOF", "NGN"), null with older API versions
+            "currency" => isset($statusData->currency) ? (string) $statusData->currency : null,
         );
     }
 
     /**
      * Server-side check before delivering an order: the payment is successful, covers the
-     * expected amount and belongs to this shop. The amount and the JavaScript callback come
-     * from the customer's browser and must never be trusted on their own.
+     * expected amount, is in the expected currency and belongs to this shop. The amount and the
+     * JavaScript callback come from the customer's browser and must never be trusted on their own.
+     * @param string $expectedCurrency currency of the order (e.g. "XOF", "NGN"); if empty, only
+     *                                 XOF / XAF payments are accepted
      */
-    public function isPaymentSuccessful($paiementRef, float $expectedAmount): bool
+    public function isPaymentSuccessful($paiementRef, float $expectedAmount, string $expectedCurrency = ''): bool
     {
         $status = $this->getPaiementStatus($paiementRef);
         if ($status === false) {
@@ -837,6 +1009,17 @@ class FeexpayClass
         if (!is_numeric($status['amount']) || (float) $status['amount'] < floor($expectedAmount)) {
             $this->lastError = array('message' => 'Montant payé inférieur au montant attendu', 'response' => $status);
             return false;
+        }
+
+        // The amount is never converted: 5 000 NGN (Nigeria) does not pay a 5 000 XOF order.
+        // Without $expectedCurrency, only CFA franc payments (XOF / XAF) are accepted.
+        if (!empty($status['currency'])) {
+            $currency = strtoupper(trim($status['currency']));
+            $expected = strtoupper(trim($expectedCurrency));
+            if ($expected !== '' ? $currency !== $expected : !in_array($currency, array('XOF', 'XAF'), true)) {
+                $this->lastError = array('message' => 'Devise du paiement (' . $currency . ') différente de celle attendue' . ($expected !== '' ? ' (' . $expected . ')' : ''), 'response' => $status);
+                return false;
+            }
         }
 
         if (!empty($status['shop']) && $status['shop'] !== $this->id) {
